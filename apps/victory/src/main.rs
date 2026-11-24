@@ -18,6 +18,23 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
+/// The Agility SDK runtime to load when `D3D12\D3D12Core.dll` sits next to
+/// the executable (shader model 6.6 on Windows 10); without it the system's.
+#[unsafe(no_mangle)]
+#[used]
+#[allow(non_upper_case_globals)]
+pub static D3D12SDKVersion: u32 = 620;
+
+#[repr(transparent)]
+pub struct SdkPath(*const u8);
+// SAFETY: points at a static, immutable string.
+unsafe impl Sync for SdkPath {}
+
+#[unsafe(no_mangle)]
+#[used]
+#[allow(non_upper_case_globals)]
+pub static D3D12SDKPath: SdkPath = SdkPath(c".\\D3D12\\".as_ptr().cast());
+
 #[derive(Parser)]
 #[command(
     name = "victory",

@@ -62,4 +62,11 @@ fn main() {
     println!("cargo:rustc-env=VICTORY_SHADER_SOURCE_HASH={:016x}{:016x}", state[0], state[1]);
     let joined: Vec<_> = switches.into_iter().collect();
     println!("cargo:rustc-env=VICTORY_SHADER_SWITCHES={}", joined.join(","));
+    // Unit-test binaries export the Agility SDK selectors (see `agility` in
+    // lib.rs), so GPU tests get SM 6.6 where `D3D12\D3D12Core.dll` sits next
+    // to them. The library itself is never linked here; its unit-test binary is.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rustc-link-arg=/EXPORT:D3D12SDKVersion,DATA");
+        println!("cargo:rustc-link-arg=/EXPORT:D3D12SDKPath,DATA");
+    }
 }

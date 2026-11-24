@@ -17,6 +17,25 @@
 
 #[cfg(windows)]
 mod ambient;
+/// The Agility SDK runtime for GPU tests, when `D3D12\D3D12Core.dll` sits
+/// next to the test binary; without it the system's.
+#[cfg(all(test, windows))]
+#[allow(non_upper_case_globals)]
+mod agility {
+    #[unsafe(no_mangle)]
+    #[used]
+    pub static D3D12SDKVersion: u32 = 620;
+
+    #[repr(transparent)]
+    pub struct SdkPath(*const u8);
+    // SAFETY: points at a static, immutable string.
+    unsafe impl Sync for SdkPath {}
+
+    #[unsafe(no_mangle)]
+    #[used]
+    pub static D3D12SDKPath: SdkPath = SdkPath(c".\\D3D12\\".as_ptr().cast());
+}
+
 #[cfg(all(windows, feature = "diagnostics"))]
 mod capture;
 #[cfg(windows)]
