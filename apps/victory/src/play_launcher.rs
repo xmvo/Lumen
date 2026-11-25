@@ -88,6 +88,13 @@ pub(super) fn run(warm: bool) -> anyhow::Result<()> {
             .env("VICTORY_RT_RESOLVE", "1");
         writeln!(log, "Experimental ray tracing requested")?;
     }
+    // Without rays, what the sun does not reach is black (faces, clothes,
+    // rooms): a constant stands in for the indirect light unless the
+    // caller chose a level or turned it off (`VICTORY_AMBIENT=off`).
+    if !rt && std::env::var_os("VICTORY_AMBIENT").is_none() {
+        child.env("VICTORY_AMBIENT", "0.6");
+        writeln!(log, "Indirect light: a constant of 0.6 (VICTORY_AMBIENT)")?;
+    }
     if warp {
         child.env("VICTORY_D3D12_WARP", "1");
     }
