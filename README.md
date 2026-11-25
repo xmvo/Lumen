@@ -33,6 +33,8 @@ Chapter 1 City produced in-range ray and triangle intersections on an RX 7900 XT
 
 ## Changes in this snapshot
 
+- Lumen: with the ray-structure builder off, the game's indirect light resolves to nearly nothing and whatever the sun does not reach is black (faces, clothes, rooms). The launcher now starts the runtime with `VICTORY_AMBIENT=0.6`, which replaces that image by one constant; the game's own lighting applies it with the surfaces' colors. Set `VICTORY_AMBIENT=off` to see the game's own output, or another level; `--rt` leaves it off. From Belobug's VIctory-Belobug-AMD by way of fxceless/victory-fork pull request #917. Checked on an RTX 3060 only so far (the first cell: walls, clothes and posters lit); frame rate unchanged.
+
 - Pixel shaders that read neighboring pixels in a 2×2 group now preserve the values at triangle edges. On an RX 7900 XTX, this reduced incorrect edge pixels from 32 to zero in each of two adjoining-triangle tests. Cube-map sampling also selects the correct mip level for explicit gradients and honors the shader's minimum mip level.
 - The ray-tracing memory directory can grow beyond 1,023 backing buffers. Each recorded draw or dispatch uses only the views available when it was recorded. Older command lists keep their original views.
 - Streamed textures can upload when only their middle pages are resident. The runtime merges overlapping memory notifications and rescans tracked textures if the notification queue fills. Previously used depth-only pipelines now warm ahead of speculative material pipelines to reduce missing shadows during loading.
