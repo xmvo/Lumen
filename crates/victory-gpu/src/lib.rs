@@ -36,6 +36,8 @@ pub mod framelog;
 #[cfg(windows)]
 mod host;
 #[cfg(windows)]
+mod ambient;
+#[cfg(windows)]
 mod indirect;
 #[cfg(windows)]
 mod inplace;
