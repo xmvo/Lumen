@@ -69,6 +69,14 @@ pub const USER_VIEW_ADDRESS: u32 = 0x101;
 /// view. Asked for every root UAV, and for the root SRVs of programs with
 /// a spilled user-data table.
 pub const USER_VIEW_BIAS: u32 = 0x103;
+/// `RootType::Other` code of a user-data dword the host computes: the
+/// thread-group id in x of the first group of this dispatch, added to the
+/// host's. A dispatch runs at most 65,535 groups in each dimension, the
+/// console's more in x: the host runs the groups past 65,535 of an
+/// indirect record as a second execution with this dword at 65,535, and
+/// sets it to 0 everywhere else. Asked by programs that read the group id
+/// in x.
+pub const USER_GROUP_BASE: u32 = 0x104;
 
 /// `ShaderFlags` bits (metadata) and their `SFI0` feature bits.
 pub(crate) mod flags {
