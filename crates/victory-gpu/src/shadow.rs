@@ -1820,11 +1820,12 @@ fn joined_over(runs: Vec<(usize, usize)>, gap: usize) -> Vec<(usize, usize)> {
 /// side of the copy, and goes up with its run. If a flight in the air
 /// wrote exactly that byte on the card (a shader store within `gap` bytes
 /// between two bytes the title changed in the same frame), the store is
-/// overwritten with the old value, and no compare finds it. Exact (0) is
-/// the default for that reason.
+/// overwritten with the old value, and no compare finds it. Exact (0) was
+/// the default for that reason; 64 is since 2026-11-25, with the other
+/// frame-rate switches (`VICTORY_MERGE_GAP=0` is exact again).
 fn merge_gap() -> usize {
     static GAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *GAP.get_or_init(|| std::env::var("VICTORY_MERGE_GAP").ok().and_then(|v| v.trim().parse::<usize>().ok()).map_or(0, |n| n.min(64)))
+    *GAP.get_or_init(|| std::env::var("VICTORY_MERGE_GAP").ok().and_then(|v| v.trim().parse::<usize>().ok()).map_or(64, |n| n.min(64)))
 }
 
 /// The runs of bytes where `now` differs from `was` (of one length), as

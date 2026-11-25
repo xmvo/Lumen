@@ -184,13 +184,17 @@ const WINDOW_MOST: u64 = 64;
 /// (`crate::indirect::bound_ahead`); a tail record that looks real is
 /// charged what it asks, a few thousand of 2^27. And arguments the title's CPU side changes are seen as
 /// before, at the next submission.
+/// On by default since 2026-11-25 (`VICTORY_INDIRECT_WINDOW=0` turns it
+/// off): with the other frame-rate switches on, the first gameplay scene
+/// went from a median of 266 to 205 ms a frame on an RTX 4070, no device
+/// loss. Do not combine with `VICTORY_CARD_FETCH_INFLIGHT=1` (README).
 ///
 /// Off for the rest of the run from the first error the card's driver
 /// reports to the system (`crate::drvwatch`): every loss of the card in a
 /// run with windows was announced that way seconds ahead.
 fn windows() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("VICTORY_INDIRECT_WINDOW").is_some_and(|v| v == "1")) && !crate::drvwatch::tripped()
+    *ON.get_or_init(|| std::env::var_os("VICTORY_INDIRECT_WINDOW").is_none_or(|v| v != "0")) && !crate::drvwatch::tripped()
 }
 
 /// What one title list has set, and what its host list was last given.
@@ -469,6 +473,15 @@ pub(crate) fn dispatched() -> u64 {
 /// streams of a cutscene frame reach further, and what lay past the first
 /// megabyte was never brought up to date - meshes without bodies, exploded
 /// triangles. `VICTORY_ROOT_VIEW_MB` sets a limit again.)
+/// Whether a constant buffer in a descriptor table whose host copy is on
+/// 256 bytes is read from that copy, as root views are, instead of being
+/// copied into the list's upload memory at submission (on by default;
+/// `VICTORY_TABLE_CBV_FILL=1` copies it as before).
+fn table_cbv_direct() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_TABLE_CBV_FILL").is_none_or(|v| v != "1"))
+}
+
 fn root_view(list: &HostList, address: u64, srv: bool) -> Option<u64> {
     static LIMIT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     let limit = *LIMIT.get_or_init(|| {
@@ -2634,6 +2647,35 @@ impl State {
                 let used = entries.iter().find(|u| u.table_offset_dwords / 8 == k);
                 match crate::descriptor::view(table + u64::from(k) * 32) {
                     Some(View::Constant(address, size)) => {
+                        // Read where the card has the buffer, as a root
+                        // view on 256 bytes is ([`root_view`]): a copy into
+                        // upload memory reads title memory on the CPU at
+                        // submission, and where an earlier flight's shaders
+                        // may write (the world's 174 MB heap, whose per-frame
+                        // constants sit beside what its dispatches write)
+                        // the submission waited for them to land, about
+                        // 190 ms a world frame, the submission lock held.
+                        if table_cbv_direct()
+                            && let Some(shadow) = crate::shadow::find(address, 1)
+                            && shadow.left(address) >= u64::from(size)
+                        {
+                            if shadow.gpu(address) % 256 == 0
+                                && shadow.left(address) >= u64::from(size.next_multiple_of(256))
+                            {
+                                shadow.refresh(list, address, u64::from(size));
+                                host.constant_at(index, shadow.gpu(address), size);
+                                continue;
+                            }
+                            // Not on 256 bytes (the console's constants are
+                            // on 16): the card copies them out of its copy.
+                            if shadow.carded()
+                                && let Some(gpu) = list.card_fill(&shadow, address, u64::from(size))
+                            {
+                                shadow.refresh(list, address, u64::from(size));
+                                host.constant_at(index, gpu, size);
+                                continue;
+                            }
+                        }
                         let Some((gpu, to)) = list.scratch(u64::from(size)) else {
                             host.make_null(index);
                             continue;
