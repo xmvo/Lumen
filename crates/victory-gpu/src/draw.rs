@@ -3265,8 +3265,38 @@ fn group_base_word(p: &crate::pipeline::host::HostPipeline) -> Option<(u32, u32)
         let (param, _) = stage.user_data?;
         let base = RootType::Other(victory_shader::emit::USER_GROUP_BASE);
         let u = stage.translated().host.user_data.iter().find(|u| u.root == base)?;
-        Some((param, u.index))
+        split_wanted(&stage.shader.hash).then_some((param, u.index))
     })
+}
+
+/// (local) Whether the program `hash` gets the second execution of
+/// [`group_base_word`]: every one, unless `VICTORY_DISPATCH_SPLIT_ONLY`
+/// names some (comma-separated beginnings of hashes: only those) or
+/// `VICTORY_DISPATCH_SPLIT_SKIP` does (all but those). Each program is
+/// logged the first time it comes by: with the second executions on, the
+/// player's hair lost its colour and the cell window its glass, and this
+/// is how the program whose groups past 65,535 do that is found.
+fn split_wanted(hash: &str) -> bool {
+    static LISTS: std::sync::OnceLock<[Vec<String>; 2]> = std::sync::OnceLock::new();
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let [only, skip] = LISTS.get_or_init(|| {
+        ["VICTORY_DISPATCH_SPLIT_ONLY", "VICTORY_DISPATCH_SPLIT_SKIP"].map(|name| {
+            std::env::var(name)
+                .unwrap_or_default()
+                .split(',')
+                .map(|h| h.trim().to_owned())
+                .filter(|h| !h.is_empty())
+                .collect()
+        })
+    });
+    let named = |list: &Vec<String>| list.iter().any(|h| hash.starts_with(h.as_str()));
+    let wanted = (only.is_empty() || named(only)) && !named(skip);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if !seen.iter().any(|h| h == hash) {
+        seen.push(hash.to_owned());
+        tracing::info!(hash, wanted, "an indirect dispatch of a program that reads its group id in x (VICTORY_DISPATCH_SPLIT)");
+    }
+    wanted
 }
 
 /// The host command signature for one argument of `kind` with records
