@@ -91,7 +91,10 @@ fn early_budgets() -> (u64, u64) {
         let ms = |name: &str, default: u64| {
             std::env::var(name).ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(default)
         };
-        (ms("VICTORY_EARLY_TEXTURES_MS", 12), ms("VICTORY_BAKE_TEXTURES_MS", 1500))
+        // (local) 1,500 ms was not enough on this PC: the first bakes ran
+        // with 5,848 textures still due (2,091 went up in that time) and
+        // the player's hair was baked without its colour, blond for the run.
+        (ms("VICTORY_EARLY_TEXTURES_MS", 12), ms("VICTORY_BAKE_TEXTURES_MS", 12_000))
     })
 }
 
@@ -1583,6 +1586,19 @@ impl State {
         let began = std::time::Instant::now();
         PASS_BUDGET.set(Some(budget));
         self.heap_textures(list, heap, host);
+        // (local) A pass takes 4,096 slots at most: before a bake, again
+        // while the pass before it found more due than that and time is left.
+        let mut again = 0;
+        while bake
+            && again < 8
+            && HEAP_TEXTURES_QUEUE[1].load(Ordering::Relaxed) > 0
+            && (began.elapsed().as_millis() as u64) < budget.0
+        {
+            again += 1;
+            let left = budget.0 - began.elapsed().as_millis() as u64;
+            PASS_BUDGET.set(Some((left, budget.1)));
+            self.heap_textures(list, heap, host);
+        }
         PASS_BUDGET.set(None);
         if bake {
             BAKED_MS.fetch_add(began.elapsed().as_millis() as u64, Ordering::Relaxed);
