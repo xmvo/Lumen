@@ -213,7 +213,7 @@ fn current(dir: &Path) -> std::io::Result<Option<Version>> {
         let file = entry.file_name();
         let file = file.to_string_lossy();
         if file.ends_with(".new") {
-            std::fs::remove_dir_all(entry.path())?;
+            remove_stale(&entry.path());
         } else if let Some(n) = version_number(&file) {
             highest = highest.max(n);
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
@@ -231,7 +231,7 @@ fn current(dir: &Path) -> std::io::Result<Option<Version>> {
             continue;
         };
         for old in &committed[at + 1..] {
-            std::fs::remove_dir_all(dir.join(format!("v{old}")))?;
+            remove_stale(&dir.join(format!("v{old}")));
         }
         return Ok(Some(Version {
             dir: version,
@@ -280,7 +280,7 @@ fn commit(
 ) -> std::io::Result<()> {
     let staged = dir.join(format!("v{number}.new"));
     if staged.exists() {
-        std::fs::remove_dir_all(&staged)?;
+        patiently(|| std::fs::remove_dir_all(&staged))?;
     }
     std::fs::create_dir_all(&staged)?;
     let write = |path: PathBuf, data: &[u8]| -> std::io::Result<()> {
@@ -302,9 +302,35 @@ fn commit(
     let names: Vec<&str> = blobs.iter().map(|(n, _)| *n).collect();
     write(staged.join(MANIFEST), &manifest(name, display, &names))?;
     step();
-    std::fs::rename(&staged, dir.join(format!("v{number}")))?;
+    patiently(|| std::fs::rename(&staged, dir.join(format!("v{number}"))))?;
     step();
     Ok(())
+}
+
+/// Removes a version folder the newest one replaces. Another process (a
+/// virus scanner reading the files just written, say) can hold it open for
+/// a moment; the folder then stays until the next save removes it, instead
+/// of costing the save.
+fn remove_stale(path: &Path) {
+    if let Err(e) = std::fs::remove_dir_all(path) {
+        tracing::debug!(path = %path.display(), %e, "game save: a stale version stays for now");
+    }
+}
+
+/// Runs a file operation again for up to a second while another process
+/// holds the files (access denied, sharing violation, delete pending).
+fn patiently<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let held = |e: &std::io::Error| matches!(e.raw_os_error(), Some(5 | 32 | 4395));
+    let mut tries = 0;
+    loop {
+        match op() {
+            Err(e) if tries < 20 && held(&e) => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            done => return done,
+        }
+    }
 }
 
 /// The containers under a provider's root, by exact name; containers in
