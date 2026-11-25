@@ -8955,9 +8955,22 @@ impl<'a> Lower<'a> {
                     let f = half(self, h)?.ok_or("a packed input half no element holds")?;
                     self.as_int(f)
                 } else if f16 {
-                    let f = half(self, h)?.ok_or("a packed input half no element holds")?;
+                    let mut f = half(self, h)?.ok_or("a packed input half no element holds")?;
+                    // omod and clamp are part of the VOP3 f16 instruction
+                    // (applied in f32 before narrowing, matching `write_f`),
+                    // and op_sel[3] picks the destination half.
+                    if let Fields::Valu(v) = &inst.fields {
+                        if v.omod != 0 {
+                            let factor = [1.0f32, 2.0, 4.0, 0.5][usize::from(v.omod)];
+                            let k = self.s.m.f32(factor.to_bits());
+                            f = self.s.m.bin(c, Bin::Mul, f, k);
+                        }
+                        if v.clamp {
+                            f = self.unary(7, f);
+                        }
+                    }
                     let lo = to_f16(self, f);
-                    self.low_half(inst, reg, lo)
+                    return self.write_half(inst, lo, None);
                 } else if matches!(eval, Eval::Mode(1)) {
                     // The whole dword of a flat input: both halves.
                     let h = 2 * attribute.channel;

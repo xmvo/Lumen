@@ -2745,4 +2745,174 @@ mod barycentric_tests {
         assert_eq!(rows, [("SV_Position", 0, Some(0)), ("TEXCOORD", 1, Some(2))]);
         validate(&shader);
     }
+
+    /// `v_interp_p2_f16` writing `v3` (`dst_high`: `op_sel[3]`, `omod`,
+    /// `clamp`), after initialising `v3` to `0x3800_3400` so the untouched
+    /// half stays visible on readback.
+    fn interp_p2_f16_shader(dst_high: bool, omod: u32, clamp: bool) -> HostShader {
+        let [e0, e1] = exp_mrt0(3);
+        let w0 = (0x35u32 << 26)
+            | (0x35au32 << 16)
+            | (u32::from(clamp) << 15)
+            | (u32::from(dst_high) << 14)
+            | 3;
+        let w1 = ((256 + 1) << 9) | ((256 + 2) << 18) | (omod << 27);
+        let words = [
+            0xC808_0000, // v_interp_p1_f32 v2, v0, attr0.x
+            0x7E06_02FF,
+            0x3800_3400, // v_mov_b32 v3, 0x3800_3400
+            w0,
+            w1, // v_interp_p2_f16 v3, attr0.x, v1, v2
+            e0,
+            e1,
+            S_ENDPGM,
+        ];
+        let native = NativeProgram {
+            stage: HwStage::Ps,
+            wave64: false,
+            vgprs: 4,
+            layout: vec![],
+            used: vec![],
+            io: StageIo::Ps {
+                inputs: vec![PsInput {
+                    usage: Usage::Generic,
+                    row: 0,
+                    mask: 0b1111,
+                    attr: 0,
+                    flat: false,
+                    fp16: true,
+                    pack2: false,
+                    row2: 0,
+                }],
+                input_addr: PERSP_CENTER,
+                db_shader_control: 0,
+                patches: vec![],
+            },
+            code: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
+        };
+        let mut texcoord = element("TEXCOORD", 0, 0);
+        texcoord.half = true;
+        let mut target = element("SV_Target", 16, 0);
+        target.usage = 15;
+        let isg1 = container::signature(&[texcoord], true);
+        let osg1 = container::signature(&[target], false);
+        let bytes = crate::dxbc::build(&[(FourCC::ISG1, &isg1), (FourCC::OSG1, &osg1)]);
+        let c = Container::parse(&bytes).unwrap();
+        let p = ir::build(&native.patched_code(), native.wave64, native.vgprs).unwrap();
+        let st = structure::structure(&p).unwrap();
+        let res = resource::track(&p, &native.layout, native.stage, Some(&st)).unwrap();
+        let io = io::raise(&p, &native).unwrap();
+        emit(&c, &native, &p, &st, &io, &res).unwrap()
+    }
+
+    #[test]
+    fn v_interp_p2_f16_translates_and_validates() {
+        for (dst_high, omod, clamp) in [(false, 0, false), (true, 1, true), (true, 3, false)] {
+            let shader = interp_p2_f16_shader(dst_high, omod, clamp);
+            validate(&shader);
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn v_interp_p2_f16_honors_op_sel_omod_and_clamp_on_gpu() {
+        use super::bitcode::{Attr, Term};
+        use super::host::{Draw, Host};
+        use super::shader::Shader;
+
+        let _one = super::valu_tests::ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut vs = Shader::new(false);
+        let pos_in = element("POSITION", 0, 0);
+        let tex_in = element("TEXCOORD", 0, 1);
+        vs.inputs = vec![
+            SigElement {
+                usage: 15,
+                ..pos_in
+            },
+            SigElement {
+                usage: 15,
+                ..tex_in
+            },
+        ];
+        let mut tex_out = element("TEXCOORD", 0, 0);
+        tex_out.interp = 2;
+        tex_out.usage = 15;
+        let mut pos_out = element("SV_Position", 3, 1);
+        pos_out.interp = 4;
+        pos_out.usage = 15;
+        vs.outputs = vec![tex_out, pos_out];
+        let b = vs.entry;
+        for (from, to) in [(1u32, 0u32), (0, 1)] {
+            for col in 0..4 {
+                let args = [vs.m.i32(from), vs.m.i32(0), vs.m.i8(col), vs.m.undef(vs.t.i32)];
+                let v = vs.op(b, "loadInput.f32", Attr::ReadNone, vs.t.f32, 4, &args);
+                let args = [vs.m.i32(to), vs.m.i32(0), vs.m.i8(col), v];
+                vs.op(b, "storeOutput.f32", Attr::NoUnwind, vs.t.void, 5, &args);
+            }
+        }
+        vs.m.terminate(b, Term::Ret);
+        let vs = HostShader {
+            stage: HwStage::Vs,
+            dxil: vs.finish(),
+            user_data: Vec::new(),
+            samplers: Vec::new(),
+            static_samplers: Vec::new(),
+            root_cbvs: Vec::new(),
+            root_srvs: Vec::new(),
+            root_uavs: Vec::new(),
+            root_indexed_views: Vec::new(),
+        };
+        validate(&vs);
+
+        #[rustfmt::skip]
+        let vertices: &[f32] = &[
+            -1.0, -1.0, 0.5, 1.0, 0.75, 0.0, 0.0, 0.0,
+             3.0, -1.0, 0.5, 1.0, 0.75, 0.0, 0.0, 0.0,
+            -1.0,  3.0, 0.5, 1.0, 0.75, 0.0, 0.0, 0.0,
+        ];
+        // TEXCOORD0.x = 0.75 (0x3A00 in f16). Initial v3 = 0x3800_3400.
+        let cases = [
+            (false, 0, false, 0x3800_3A00u32), // low half <- 0.75, high half kept
+            (true, 1, true, 0x3C00_3400u32),   // high half <- clamp(0.75 * 2.0) = 1.0, low kept
+            (true, 3, false, 0x3600_3400u32),  // high half <- 0.75 * 0.5 = 0.375, low kept
+        ];
+        let mut ran = 0;
+        for (label, warp) in [("hardware", false), ("warp", true)] {
+            let Ok(host) = Host::new(warp) else {
+                eprintln!("no SM 6.6 {label} device; skipped");
+                continue;
+            };
+            for &(dst_high, omod, clamp, expected) in &cases {
+                let ps = interp_p2_f16_shader(dst_high, omod, clamp);
+                let (root, pso) = host.pipeline(&vs, &ps).unwrap();
+                let texels = host
+                    .draw(
+                        &root,
+                        &pso,
+                        &Draw {
+                            roots: Vec::new(),
+                            textures: &[],
+                            samplers: &[],
+                            vertices,
+                            stride: 32,
+                            size: (4, 4),
+                            mesh_groups: 0,
+                        },
+                    )
+                    .unwrap();
+                assert!(
+                    texels.iter().all(|t| t[0].to_bits() == expected),
+                    "{label} (high={dst_high}, omod={omod}, clamp={clamp}): got {:#010x}, expected {expected:#010x}",
+                    texels[0][0].to_bits()
+                );
+            }
+            eprintln!("{label}: v_interp_p2_f16 op_sel/omod/clamp verified");
+            ran += 1;
+        }
+        if ran == 0 {
+            eprintln!("no SM 6.6 device; skipped");
+        }
+    }
 }
