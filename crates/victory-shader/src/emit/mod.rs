@@ -2093,6 +2093,7 @@ mod tests {
                 root_srvs: l.root_srvs,
                 root_uavs: l.root_uavs,
                 root_indexed_views: Vec::new(),
+                half_views: Vec::new(),
             };
             let (root, pso) = host.compute_pipeline(&cs).unwrap();
             // Three groups, with the first at 0 and at 65,535: each stores
