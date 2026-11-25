@@ -58,7 +58,103 @@ enum Held {
     /// title can add to its end meanwhile; whatever is added stays behind
     /// this (the line is not empty), signals too.
     Running,
+    /// With [`present_behind`]: the title's present of a frame, due after
+    /// what the queue holds before it: the host texture shown, the state
+    /// the title's lists leave it in, and the frame's number.
+    Present(windows::Win32::Graphics::Direct3D12::ID3D12Resource, u32, u64),
 }
+
+/// Presents that are in a queue's line and have not run ([`Held::Present`]).
+#[cfg(windows)]
+static PRESENTS_HELD: AtomicU64 = AtomicU64::new(0);
+
+/// Whether a present goes behind the queue's line and returns at once
+/// (`VICTORY_ASYNC_PRESENT=1`; needs [`behind`] and presents that do not
+/// settle the flights, `crate::host::late_free_present`).
+///
+/// Why: with [`behind`] our thread prepares and sends the submissions, but
+/// the title's present still ran the line itself first, that is: it stood
+/// until our thread had prepared every submission of the frame. Run 225's
+/// frame log (the cell, 136 ms a frame): the title's render thread is 77 ms
+/// of every frame inside the present waiting for that, using 3 ms of
+/// processor itself, and only then begins to record the next frame (about
+/// 57 ms), during which our thread has nothing to prepare. The two phases
+/// ran one after the other.
+///
+/// With the switch the present is one more thing in the line
+/// ([`Held::Present`]): our thread shows the frame when it gets there, in
+/// order, and the title records the next frame meanwhile.
+///
+/// The title is one frame ahead at most: a present that finds the one
+/// before it still in a line runs the old way (the lines first, then
+/// itself), and so does a frame that is saved or listed, and a present
+/// that finds its queue's line empty. A wait nothing ever meets is
+/// therefore still forced, by the present after it.
+///
+/// What it assumes, beyond what [`behind`] does: title memory a submission
+/// reads stays as it was until the submission's fence is signalled, also
+/// across the title's present. On the console the card reads that memory
+/// when it runs the list, after the present call has returned.
+#[cfg(windows)]
+fn present_behind() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("VICTORY_ASYNC_PRESENT").is_some_and(|v| v == "1")
+            && behind()
+            && crate::host::late_free_present();
+        if on {
+            tracing::info!("presents go behind the queue's line and return at once (VICTORY_ASYNC_PRESENT=1)");
+        }
+        on
+    })
+}
+
+/// With [`present_behind`]: puts the present of the next frame behind what
+/// the queue `this` holds. False if it has to run the old way.
+#[cfg(windows)]
+fn send_behind(this: This, planes: u32, plane_parameters: *const Plane) -> bool {
+    if this.is_null() || planes == 0 || PRESENTS_HELD.load(Ordering::Relaxed) != 0 {
+        return false;
+    }
+    let frame = FRAMES.load(Ordering::Relaxed) + 1;
+    // A frame that is saved or listed is read back at once.
+    #[cfg(feature = "diagnostics")]
+    if crate::capture::wanted(frame) || crate::capture::listed(frame) {
+        return false;
+    }
+    // SAFETY: the title passes `planes` plane descriptions.
+    let Some(plane) = (unsafe { plane_parameters.as_ref() }) else {
+        return false;
+    };
+    if plane.count == 0 || plane.resources.is_null() {
+        return false;
+    }
+    // SAFETY: the plane lists `count` resources.
+    let resource = unsafe { *plane.resources };
+    let Some(texture) = crate::resource::host_resource(resource) else {
+        return false;
+    };
+    // The state the lists recorded so far leave the texture in: what our
+    // copy finds it in when it runs behind them (looked at, not changed).
+    const COPY_SOURCE: u32 = 0x800;
+    let state = crate::resource::host_transition(resource, COPY_SOURCE).map_or(COPY_SOURCE, |(_, before)| before);
+    crate::resource::host_transition(resource, state);
+    let texture = texture.clone();
+    let sent = hold(this, || {
+        PRESENTS_HELD.fetch_add(1, Ordering::Relaxed);
+        Held::Present(texture, state, frame)
+    });
+    if sent {
+        PRESENTS_BEHIND.fetch_add(1, Ordering::Relaxed);
+        wake();
+    }
+    sent
+}
+
+/// Presents sent behind their queue's line since the start
+/// ([`send_behind`]), for the line every 512 of them.
+#[cfg(windows)]
+static PRESENTS_BEHIND: AtomicU64 = AtomicU64::new(0);
 
 /// The queues that hold something (their addresses).
 #[cfg(windows)]
@@ -373,6 +469,7 @@ fn wake() {
 /// to run, each time something was added or a fence moved.
 #[cfg(windows)]
 fn worker() {
+    crate::framelog::keep_on_fast_cores("victory-submit");
     loop {
         {
             let mut work = lock(&WORK.0);
@@ -381,7 +478,19 @@ fn worker() {
             }
             *work = false;
         }
+        let started = std::time::Instant::now();
+        let (user, kernel) = crate::framelog::thread_times();
+        if crate::framelog::on() {
+            crate::framelog::add(crate::framelog::T::WorkerLooks, 1);
+            if crate::framelog::on_slow_core() {
+                crate::framelog::add(crate::framelog::T::WorkerSlow, 1);
+            }
+        }
         release_held_now(false);
+        let (user_now, kernel_now) = crate::framelog::thread_times();
+        crate::framelog::add(crate::framelog::T::WorkerUs, started.elapsed().as_micros() as u64);
+        crate::framelog::add(crate::framelog::T::WorkerUserUs, user_now.saturating_sub(user));
+        crate::framelog::add(crate::framelog::T::WorkerKernelUs, kernel_now.saturating_sub(kernel));
     }
 }
 
@@ -520,6 +629,27 @@ fn release_held_now(all: bool) {
                             }
                         }
                     }
+                    Held::Present(texture, state, frame) => {
+                        let show = || {
+                            if let Some(host) = crate::host::host() {
+                                let _ = host.present(&texture, state, frame);
+                            }
+                        };
+                        if all {
+                            show();
+                        } else {
+                            // The line is open while the frame is shown,
+                            // as it is while a submission is prepared.
+                            held.insert(0, Held::Running);
+                            drop(held);
+                            show();
+                            held = lock(line);
+                            if matches!(held.first(), Some(Held::Running)) {
+                                held.remove(0);
+                            }
+                        }
+                        PRESENTS_HELD.fetch_sub(1, Ordering::Relaxed);
+                    }
                     // Behind what was sent to the card and not waited
                     // for, if anything was.
                     Held::Signal(fence, value) => {
@@ -631,6 +761,18 @@ extern "system" fn release(this: This) -> u32 {
 /// Runs the lists' host lists and waits for them (decision 0007). A queue
 /// that waits for a fence keeps them until the fence is reached.
 extern "system" fn execute(this: This, count: u32, lists: *const This) {
+    #[cfg(windows)]
+    let started = std::time::Instant::now();
+    execute_now(this, count, lists);
+    #[cfg(windows)]
+    {
+        let us = started.elapsed().as_micros() as u64;
+        crate::framelog::add(crate::framelog::T::ExecuteUs, us);
+        crate::framelog::here(crate::framelog::H::ExecuteUs, us);
+    }
+}
+
+fn execute_now(this: This, count: u32, lists: *const This) {
     if lists.is_null() {
         return;
     }
@@ -872,19 +1014,40 @@ pub(crate) fn presented() -> u64 {
 /// shortcut: one plane, no scaling or placement, the source expected in
 /// the common state.
 extern "system" fn present(
-    _: This,
+    this: This,
     planes: u32,
     plane_parameters: *const Plane,
     _parameters: *const u8,
 ) -> HRESULT {
+    #[cfg(windows)]
+    let presenting = std::time::Instant::now();
+    let hr = present_now(this, planes, plane_parameters);
+    #[cfg(windows)]
+    {
+        crate::framelog::add(crate::framelog::T::PresentUs, presenting.elapsed().as_micros() as u64);
+        crate::framelog::frame();
+    }
+    hr
+}
+
+fn present_now(this: This, planes: u32, plane_parameters: *const Plane) -> HRESULT {
+    #[cfg(windows)]
+    let presenting = std::time::Instant::now();
     #[cfg(all(windows, feature = "diagnostics"))]
     crate::copystat::present_begins();
     #[cfg(all(windows, feature = "diagnostics"))]
     crate::profile::frame();
+    // With `present_behind`: the frame is shown by our thread, behind what
+    // the queue holds, and nothing is run or waited for here.
+    #[cfg(windows)]
+    let sent_behind = present_behind() && send_behind(this, planes, plane_parameters);
+    #[cfg(not(windows))]
+    let _ = this;
     // Submissions sent to the card and not waited for are settled first,
     // and what that frees runs in its own order, before anything is forced.
     #[cfg(windows)]
-    if crate::host::late() && !crate::host::late_free_present() {
+    if sent_behind {
+    } else if crate::host::late() && !crate::host::late_free_present() {
         // (With `behind`: what the queues hold runs here first, and what
         // it sent is settled with the rest.)
         if behind() {
@@ -901,8 +1064,20 @@ extern "system" fn present(
     // shortcut: what a queue still holds at a present runs now, whatever
     // its fence: a wait is not kept across frames.
     #[cfg(windows)]
-    release_held(forces());
+    if !sent_behind {
+        release_held(forces());
+    }
+    #[cfg(windows)]
+    crate::framelog::add(crate::framelog::T::PresentLineUs, presenting.elapsed().as_micros() as u64);
     let frame = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+    #[cfg(windows)]
+    if sent_behind && PRESENTS_BEHIND.load(Ordering::Relaxed).is_multiple_of(512) {
+        tracing::info!(
+            frame,
+            behind = PRESENTS_BEHIND.load(Ordering::Relaxed),
+            "presents sent behind their queue's line so far (VICTORY_ASYNC_PRESENT=1); the others ran the old way"
+        );
+    }
     if frame.is_power_of_two() {
         let (draws, dispatches) = crate::list::take_counts();
         #[cfg(windows)]
@@ -939,7 +1114,8 @@ extern "system" fn present(
         }
     }
     #[cfg(windows)]
-    if planes > 0
+    if !sent_behind
+        && planes > 0
         // SAFETY: the title passes `planes` plane descriptions.
         && let Some(plane) = unsafe { plane_parameters.as_ref() }
         && plane.count > 0

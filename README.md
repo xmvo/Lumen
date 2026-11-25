@@ -85,10 +85,11 @@ What did it, on top of the list below:
   checker (`VICTORY_INDIRECT_WINDOW_CHECK=1`) then showed one list drawing
   90 records of 2^24 vertices from a window, where the per-draw path lets
   eight through; a record of 2^23 vertices an instance or more now runs
-  empty. Since that fix: five runs with windows on, no device loss, the
-  card's time per frame roughly halved. One loss after the fix had the
-  in-flight fetch (#648) on as well; do not combine the two. The in-flight
-  fetch itself measured slower here in two runs and stays off.
+  empty. Since that fix: eight runs with windows on, seven without a
+  device loss and one that lost the device 44 s into the world (cause not
+  found; see the driver watch below). One earlier loss after the fix had
+  the in-flight fetch (#648) on as well; do not combine the two. The
+  in-flight fetch itself measured slower here in two runs and stays off.
 - Frame rate, second night (an RTX 4070; the first room went from about
   3.5-4 to 6-7 frames a second with ALL of the switches below; the
   defaults are unchanged and give about 4.5-5):
@@ -113,11 +114,84 @@ What did it, on top of the list below:
     reused instead of made and freed every frame.
   - `VICTORY_PROFILE=1` (diagnostics builds): a sampling profiler inside
     the layer; it is how the above was found.
-  Still open: the frame rate dips (5-second readings of 300-500 ms among
-  150-215); in some of them texture uploads are 3-5 times the usual, in
-  others nothing logged stands out. Not shader compiles (checked: 4-9
-  first uses and no waiting in those readings). A per-frame logger is the
-  next step.
+- Frame rate, third session: measuring first (same RTX 4070, first room).
+  - A frame log (`VICTORY_FRAME_LOG`, on in diagnostics builds): every
+    frame's length, and for the usual frame and each long one what it was
+    made of (the render thread's time in the present call, the submit
+    thread's work, copies, copy-back, recording, texture work, faults,
+    disk). A card meter (`VICTORY_CARD_METER`) adds the card's time by
+    kind of list from a timestamp at each list's start and end.
+  - What they showed, windows off: a usual frame of 136 ms; the title's
+    render thread waits 77 ms of it in the present call for the submit
+    thread, which works 118 ms (copies of title memory 41, copy-back 40);
+    the card is 85-98 % busy, of about 130 ms a frame 16 ms in our lists
+    that bring card copies up to date, 10 ms in our compare lists and 102
+    ms in the title's own lists with the per-record clamp. Frame time is
+    linear in draws (about 32 microseconds a draw all-in): the title draws
+    about twice as much on some frames, which are the long ones.
+  - The regular dips of earlier test runs were the test harness: a saved
+    frame (`VICTORY_CAPTURE_WORLD`, every 8th world frame) is read back
+    and written as a PNG inside the present, 235 ms each.
+    `VICTORY_CAPTURE_WORLD_EVERY=64` for runs that measure speed.
+  - `VICTORY_INDIRECT_WINDOW=1` measured again with those instruments. A
+    CORRECTION: the first figures given here (6.0 against 8.9 frames a
+    second) compared two runs that stood in different scenes during the
+    measured window (about 4,300 against 1,550 draws a frame) and are
+    withdrawn. Compared at equal draws, by a line fitted to each run's
+    frame times against its draws per frame: windows off 145 ms at 4,500
+    draws and 271 ms at 10,000; windows on with `VICTORY_COPY_PLAIN=1`
+    124 ms and 211 ms. On screen: 7-8 frames a second in the first rooms,
+    10-12 in their lighter views.
+  - A driver watch (on by default; `VICTORY_DRIVER_WATCH=0` off): the
+    layer subscribes to the system's event log and logs every entry of a
+    display driver as it is recorded; the first one turns draw windows
+    off for the rest of the run. Every device loss here had such entries
+    2.7 to 55 seconds before the device was removed, and no run without
+    them lost its device.
+  - A copy between two title textures that share one host texture is no
+    longer recorded (the host does not allow a texture copied onto
+    itself): 402 of them in a five-minute run.
+  - The list of shader-visible heaps is a reader-writer lock (recording
+    threads waited 48 ms a frame, summed, behind the heap sync); the heap
+    sync looks at a changed page's records under one lock, fingerprint
+    first; guarded view memory is left out of a submission's write-watch
+    askings ahead (after triippywhale).
+  - `VICTORY_COPY_PLAIN=1`: copies of title memory made in place by this
+    process, with a handler that falls back to the kernel's copy on a
+    missing page. Its first form also took the layer's one-byte "is this
+    page there" reads, 1,000 to 1,300 faults a frame, and won nothing;
+    reads under 256 bytes now stay with the kernel and a source that
+    faulted is left alone for two seconds (4 to 9 faults a frame). The
+    submit thread's kernel time fell from 44 to 20 ms a frame; the
+    picture is the same.
+  - The layer's submit and copy-back threads ask for the fast cores of a
+    hybrid processor (`VICTORY_FAST_CORES=0`: not): the submit thread was
+    found on a slow core in 6 % of its looks, now in none of 21,059.
+    `VICTORY_DISK_CORES=slow` (off, not measured) asks the slow cores for
+    the DirectStorage workers, which are as many as the logical
+    processors and free to run anywhere.
+  - Behind switches, built and unit-tested, not yet shown to pay:
+    `VICTORY_REFRESH_ONCE=1`, `VICTORY_VIEW_KNOWN=1`,
+    `VICTORY_BACK_OWN_VIEW=1` (picture to be checked),
+    `VICTORY_ASYNC_PRESENT=1` (the present goes behind the queue's line;
+    no gain while the card is the limit).
+  - Tried and refused: `VICTORY_BVH_HOLD=1` holds back the 64 programs
+    that walk ray-tracing structures nothing has built; the picture loses
+    its indirect light with it, so it stays off.
+  - The process opts out of the system's efficiency mode
+    (`VICTORY_EFFICIENCY_MODE=1` leaves it); on a hybrid processor the
+    frame log found the title's render and recording threads on fast
+    cores in every look of a run, and the layer's submit thread on a slow
+    core in 6 % of its looks.
+  Still open: the per-record clamp is most of the card's time, and the
+  copies between the PC's memory and the card's are most of the submit
+  thread's; the cause of the one device loss with windows is not known.
+  A first play session past the first rooms reached the open world and
+  lost the device there with no driver entry (reason "device removed"):
+  the card had no room for new textures from the opening cutscene on
+  (9.2 of a 10.3 GB budget on a 12 GB card; 2,073 passes made no texture
+  for lack of room; 44,613 textures let go and made again in 13 minutes).
+  Cause of that removal not known either.
 - Known and counted, not fixed yet: an indirect compute pass asks for
   about 77,500 thread groups in x where one dispatch runs 65,535 (the
   rest is cut off).
