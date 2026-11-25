@@ -112,7 +112,15 @@ pub fn run(paths: Vec<PathBuf>, verbose: bool, disasm: bool) -> Result<()> {
                         let mut list = Vec::new();
                         for n in &programs {
                             *t.native_stages.entry(n.stage).or_default() += 1;
-                            list.push(format!("{:?} {} B", n.stage, n.code.len()));
+                            // A pixel program's DB_SHADER_CONTROL too (depth export,
+                            // kill, Z order, depth test before the shader).
+                            let db = match &n.io {
+                                victory_shader::native::StageIo::Ps { db_shader_control, .. } => {
+                                    format!(" db {db_shader_control:#x}")
+                                }
+                                _ => String::new(),
+                            };
+                            list.push(format!("{:?} {} B{db}", n.stage, n.code.len()));
                             match gfx10::decode(&n.code) {
                                 Ok(insts) => {
                                     t.decoded += 1;
