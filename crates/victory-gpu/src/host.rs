@@ -1753,6 +1753,9 @@ struct CardPlan {
     /// The lists of ours the plan recorded (whether the compare, the
     /// list), given back by `Host::card_done`.
     lists: Vec<(bool, Prelude)>,
+    /// (Lumen) The plan's number in the order of the queue (0 without the
+    /// relay): the sends up to it had run when its submission had.
+    number: u64,
 }
 
 /// One piece of submission-time work, in recorded order.
@@ -2730,6 +2733,29 @@ struct RelayFetch {
     sent: u64,
     /// Buffer, mapping, bytes.
     buffer: Option<(ID3D12Resource, usize, u64)>,
+    /// (Lumen) A queue of the fetch's own ([`relay_queue`]).
+    queue: Option<ID3D12CommandQueue>,
+}
+
+/// (Lumen) Whether the fetch of the thread that lands flights runs on a
+/// queue of its own (`VICTORY_RELAY_QUEUE=1`; off by default: on the
+/// host's queue).
+///
+/// On the host's queue the fetch runs behind everything sent ahead by
+/// then: in the first cell on an RTX 3060 the landing thread stood 250 ms
+/// of a 400 ms frame waiting for its fetches, and 24 ms with this. The
+/// frame was no shorter there (2.2 frames a second either way: the
+/// submitting thread's preparing took up what was freed, on a processor
+/// with four cores and 16 GB), so it stays a switch until a run on a
+/// faster machine shows what it gives. The flights being landed
+/// have run, so what they wrote is there whichever queue copies it out;
+/// flights still in the air may be writing the same pieces, and their
+/// landings merge those again. What the fetch can no longer know is which
+/// later sends of title bytes it came after, so it claims none: its bytes
+/// are merged as of the last landed plan's own send ([`CardPlan::number`]).
+fn relay_queue() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_RELAY_QUEUE").is_some_and(|v| v == "1"))
 }
 
 /// The thread that lands flights ([`relay`]): as soon as the card has run
@@ -3689,6 +3715,7 @@ impl Host {
             check: None,
             _synced: dirty.into_iter().map(|(shadow, _)| shadow).collect(),
             lists: used,
+            number: sent_as,
         };
         // Each byte once, as the copy-back joins the declared ranges. The
         // results go behind those of plans still in the air.
@@ -3810,12 +3837,26 @@ impl Host {
         unsafe {
             let fence: ID3D12Fence = self.device.CreateFence(0, D3D12_FENCE_FLAG_NONE).ok()?;
             let event = CreateEventW(None, false, false, None).ok()?;
+            let queue = relay_queue()
+                .then(|| {
+                    self.device
+                        .CreateCommandQueue::<ID3D12CommandQueue>(&D3D12_COMMAND_QUEUE_DESC {
+                            Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
+                            ..Default::default()
+                        })
+                        .ok()
+                })
+                .flatten();
+            if relay_queue() && queue.is_none() {
+                tracing::warn!("no queue of its own for the fetch of what shaders wrote (VICTORY_RELAY_QUEUE): the host's queue");
+            }
             Some(RelayFetch {
                 list,
                 fence,
                 event,
                 sent: 0,
                 buffer: None,
+                queue,
             })
         }
     }
@@ -3890,6 +3931,9 @@ impl Host {
         };
         f.sent += 1;
         let ((allocator, list), fence, event, sent) = (f.list.clone(), f.fence.clone(), f.event, f.sent);
+        let side = f.queue.clone();
+        // On a queue of its own: as of the last landed plan's send.
+        let landed = plans.iter().map(|p| p.number).max().unwrap_or(0);
         let waiting = std::time::Instant::now();
         // SAFETY: the list's last run was waited for by this thread; live
         // buffers (the copies are held by the plans); the fence and the
@@ -3901,6 +3945,13 @@ impl Host {
                 copy_fetch_runs(&list, &buffer, pieces.iter().map(|(shadow, lo, hi, at)| (&shadow.buffer, *lo, *hi, *at)));
                 list.Close()?;
                 let lists = [Some(list.cast::<ID3D12CommandList>()?)];
+                if let Some(side) = &side {
+                    side.ExecuteCommandLists(&lists);
+                    side.Signal(&fence, sent)?;
+                    fence.SetEventOnCompletion(sent, event)?;
+                    WaitForSingleObject(event, INFINITE);
+                    return Ok(landed);
+                }
                 // In the order of the queue: the sends of title bytes so
                 // far are ahead of this fetch, every later one behind it.
                 let order = QUEUE_ORDER.lock().unwrap_or_else(|e| e.into_inner());
