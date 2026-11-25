@@ -3104,6 +3104,9 @@ impl State {
         // second records begin once they are made. (Dispatches are never
         // clamped in windows, so the window paths below never see one.)
         let group_base = if kind == DISPATCH { group_base_word(p) } else { None };
+        if kind == DISPATCH {
+            note_wide_dispatch(p, arguments);
+        }
         let mut second: Option<((u32, u32), u64)> = None;
         let (bounded, at) = match hit {
             Some((scratch, at, step)) => {
@@ -3267,6 +3270,37 @@ fn group_base_word(p: &crate::pipeline::host::HostPipeline) -> Option<(u32, u32)
         let u = stage.translated().host.user_data.iter().find(|u| u.root == base)?;
         split_wanted(&stage.shader.hash).then_some((param, u.index))
     })
+}
+
+/// (local, diagnostics) Logs a compute program whose indirect record, as
+/// title memory holds it now, asks for more than 65,535 groups in x: the
+/// first time, and each time it asks for more than before (eight lines a
+/// program at most). The record may be written by a shader, so what is
+/// read here is what was copied back so far.
+fn note_wide_dispatch(p: &crate::pipeline::host::HostPipeline, arguments: u64) {
+    static SEEN: std::sync::Mutex<Vec<(String, u32, u32)>> = std::sync::Mutex::new(Vec::new());
+    let mut bytes = [0u8; 12];
+    if !crate::host::read_into(arguments as *const u8, &mut bytes) {
+        return;
+    }
+    let word = |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+    let (x, y, z) = (word(0), word(4), word(8));
+    if x <= 65535 || x > 1 << 24 || y > 64 || z > 64 {
+        return;
+    }
+    let Some(hash) = p.stages.first().map(|s| s.shader.hash.clone()) else {
+        return;
+    };
+    let reads_x = group_base_word(p).is_some();
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    match seen.iter_mut().find(|e| e.0 == hash) {
+        Some(e) if x > e.1 && e.2 < 8 => {
+            (e.1, e.2) = (x, e.2 + 1);
+        }
+        Some(_) => return,
+        None => seen.push((hash.clone(), x, 1)),
+    }
+    tracing::info!(hash, x, y, z, reads_x, "an indirect dispatch asks for more than 65,535 groups in x");
 }
 
 /// (local) Whether the program `hash` gets the second execution of
