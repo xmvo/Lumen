@@ -374,6 +374,10 @@ pub(super) const LOOP_LIMIT: u32 = 1 << 20;
 /// leaves the program as killed, as before.
 pub(super) const TRACE_LOOP_LIMIT: u32 = 1 << 10;
 
+/// The compare-exchanges an LDS byte or half write tries
+/// ([`Lower::lds_merge`]).
+const LDS_RETRIES: u32 = 1 << 16;
+
 /// Lane masks read as numbers (`s_bcnt1`, `s_ff1`, `v_mbcnt`, scalar
 /// compares, bit tests) are ballots of the lanes' booleans, taken where the
 /// mask is written: structurisation's `active` masks hold only lanes that
@@ -4146,6 +4150,42 @@ impl<'a> Lower<'a> {
 
     /// Starts code only the lanes where `guard` holds run (a store under a
     /// lane guard): returns where it started and the join block.
+    /// Writes `field` over the bits of LDS dword `p` that `keep` clears, in
+    /// the lanes `guard` holds for (`ds_write_b8` / `_b16` and their `_d16_hi`
+    /// forms: LDS is dwords here). One compare-exchange, retried while another
+    /// lane changes the dword between the read and the exchange: lanes that
+    /// write other parts of one dword in the same instruction all land, no
+    /// reader sees the dword with the part cleared, and lanes that write the
+    /// same part leave one of their values, as on the console (which one is
+    /// not specified there). A clear and a set as two atomics would OR such
+    /// lanes' values together, and show the cleared part in between.
+    fn lds_merge(&mut self, p: V, keep: V, field: V, guard: Option<V>) {
+        let at = self.begin_guarded(guard);
+        let pre = self.cur;
+        let first = self.s.m.load(pre, p);
+        let (body, done) = (self.s.m.new_block(), self.s.m.new_block());
+        self.s.m.terminate(pre, Term::Br(body));
+        let old = self.s.m.phi(body, self.s.t.i32);
+        let n = self.s.m.phi(body, self.s.t.i32);
+        let kept = self.s.m.bin(body, Bin::And, old, keep);
+        let new = self.s.m.bin(body, Bin::Or, kept, field);
+        let seen = self.s.m.cmpxchg(body, p, old, new);
+        let one = self.s.m.i32(1);
+        let next = self.s.m.bin(body, Bin::Add, n, one);
+        // Each retry follows another lane's write to the dword; the bound
+        // only keeps a translation fault from spinning the GPU.
+        let limit = self.s.m.i32(LDS_RETRIES);
+        let lost = self.s.m.cmp(body, pred::NE, seen, old);
+        let more = self.s.m.cmp(body, pred::IULT, next, limit);
+        let again = self.s.m.bin(body, Bin::And, lost, more);
+        self.s.m.terminate(body, Term::CondBr(again, body, done));
+        let zero = self.s.m.i32(0);
+        self.s.m.set_phi(old, vec![(first, pre), (seen, body)]);
+        self.s.m.set_phi(n, vec![(zero, pre), (next, body)]);
+        self.cur = done;
+        self.end_guarded(at, &[]);
+    }
+
     fn begin_guarded(&mut self, guard: Option<V>) -> Option<(usize, usize)> {
         let g = guard?;
         let (then, join) = (self.s.m.new_block(), self.s.m.new_block());
@@ -4655,8 +4695,8 @@ impl<'a> Lower<'a> {
                 };
                 self.write(inst, Reg::V(reg), x, guard);
             } else {
-                // Clear, then set: two atomics, so lanes writing other
-                // bytes of the dword keep theirs.
+                // The part replaces its bits of the dword in one
+                // compare-exchange (`lds_merge`).
                 let mut x = self.vgprs(inst, data.first().ok_or("an LDS write")?, 1)?[0];
                 if name != base {
                     // The data's high half.
@@ -4668,11 +4708,7 @@ impl<'a> Lower<'a> {
                 let m = self.s.m.bin(c, Bin::Shl, mask, sh);
                 let ones = self.s.m.i32(u32::MAX);
                 let keep = self.s.m.bin(c, Bin::Xor, m, ones);
-                use super::bitcode::Rmw;
-                let at = self.begin_guarded(guard);
-                self.s.m.atomic(self.cur, Rmw::And, p, keep);
-                self.s.m.atomic(self.cur, Rmw::Or, p, x);
-                self.end_guarded(at, &[]);
+                self.lds_merge(p, keep, x, guard);
             }
             return Ok(());
         }
