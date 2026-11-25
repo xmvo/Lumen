@@ -75,6 +75,20 @@ pub(crate) static STATS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
 /// (`VICTORY_LEVELS_ON_DEMAND=1`; off by default), and a card that reads
 /// zeros from, and drops writes to, levels without memory (tiled resources
 /// tier 2).
+/// (local) Held for writing while a level is given its tiles
+/// (`UpdateTileMappings`) and for reading while a list records copies into
+/// a texture with levels on demand (`crate::texture::upload`).
+///
+/// Two runs on an RTX 3060 (driver 32.0.15.x, `nvwgf2umx.dll+0x1a3084`,
+/// a read of 0xc) died inside `CopyTextureRegion` of an upload, both at
+/// the title's same draw as the world began, which is when the first
+/// levels are given tiles by the thread that submits (with
+/// `VICTORY_ASYNC_SUBMIT=1` not the thread that records). Direct3D lets
+/// the two calls run side by side; the driver, it seems, does not for one
+/// reserved texture. The tile call is rare (three in a run), so the lock
+/// costs nothing.
+pub(crate) static MAPPING: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
 pub(crate) fn wanted() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
@@ -549,6 +563,9 @@ impl Tiled {
             let starts: Vec<u32> = runs.iter().map(|run| run.0).collect();
             let counts: Vec<u32> = runs.iter().map(|run| run.1).collect();
             let began = std::time::Instant::now();
+            // (local) Not while a list records a copy into a texture with
+            // levels on demand ([`MAPPING`]).
+            let _mapping = MAPPING.write().unwrap_or_else(|e| e.into_inner());
             // SAFETY: a live reserved texture and a live heap of ours; one
             // region of `tiles` tiles from the subresource's first tile;
             // `runs.len()` ranges whose counts add up to `tiles`, in three

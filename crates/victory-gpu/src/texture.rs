@@ -758,6 +758,9 @@ pub(crate) fn upload(list: &HostList, resource: This, texture: &ID3D12Resource) 
     crate::framelog::add(crate::framelog::T::Uploads, 1);
     const COPY_DEST: u32 = 0x400;
     crate::list::ensure_state(list, resource, COPY_DEST);
+    // (local) Levels on demand: no level is given tiles while the copies
+    // into the texture are recorded (`crate::tiles::MAPPING`).
+    let _mapping = staging.on_demand.then(|| crate::tiles::MAPPING.read().unwrap_or_else(|e| e.into_inner()));
     // The staging buffer lives as long as `staging`, which the deferred
     // refresh below holds until the list is reset.
     for (i, footprint) in staging.footprints.iter().enumerate() {
