@@ -77,6 +77,24 @@ fn build() -> [u8; 32] {
     *h.finalize().as_bytes()
 }
 
+/// (local) The compute programs, by the beginning of their hash, that take
+/// the first group of a dispatch in x from the host
+/// (`victory_shader::emit::with_group_base`), so that their indirect
+/// dispatches past 65,535 groups in x can run the rest in a second
+/// execution (`crate::draw`). `2dc364df5d3278b8`: the lighting pass of the
+/// prologue, 103,696 to 112,392 groups a frame; cut at 65,535 it left a
+/// band of stale tiles along the bottom of the picture. Found with the log
+/// line of `crate::draw` for records that ask for more.
+const WIDE_DISPATCH: [&str; 1] = ["2dc364df5d3278b8"];
+
+/// The translation of `container`, with the group base for the programs
+/// of [`WIDE_DISPATCH`].
+fn translate_container(container: &[u8]) -> Result<HostShader, String> {
+    let hash = blake3::hash(container).to_hex();
+    let wide = WIDE_DISPATCH.iter().any(|h| hash.starts_with(h));
+    victory_shader::emit::with_group_base(wide, || victory_shader::emit::translate(container)).map_err(|e| e.to_string())
+}
+
 /// The offline warm-up (`victory translate --warm`): `container` is
 /// translated into the cache unless it is there already. `Ok(true)`: it
 /// was translated now. Needs [`use_shader_cache`] and the same host facts
@@ -86,7 +104,7 @@ pub fn warm(container: &[u8]) -> Result<bool, String> {
     let ran = AtomicBool::new(false);
     let translate = |c: &[u8]| {
         ran.store(true, Ordering::Relaxed);
-        victory_shader::emit::translate(c).map_err(|e| e.to_string())
+        translate_container(c)
     };
     cached(cache, &build(), container, translate).map(|_| ran.load(Ordering::Relaxed))
 }
@@ -94,7 +112,7 @@ pub fn warm(container: &[u8]) -> Result<bool, String> {
 /// The translation of a console shader container, from the cache when
 /// there is one.
 pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
-    let translate = |c: &[u8]| victory_shader::emit::translate(c).map_err(|e| e.to_string());
+    let translate = |c: &[u8]| translate_container(c);
     match CACHE.get() {
         Some(cache) => cached(cache, &build(), container, translate),
         None => translate(container),

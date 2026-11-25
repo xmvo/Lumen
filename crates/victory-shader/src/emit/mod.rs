@@ -325,6 +325,30 @@ pub struct UserData {
 /// with that on for every program, 8,551 pixel programs of the title that
 /// already translated came out changed (an extra evaluation in each), for
 /// the sake of 9 that did not translate.
+thread_local! {
+    static GROUP_BASE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// (local) Runs `f` with the translations it makes on this thread taking
+/// the first group of a dispatch in x from the host ([`USER_GROUP_BASE`])
+/// or not. Off unless said: with it on for every program that reads its
+/// group id in x (471 of the title's run by indirect dispatch), the
+/// player's hair lost its colour, the cell window its glass and skin its
+/// shading on an RTX 3060, though the host set the dword to 0 for all of
+/// them; why is not known. One program of those asks for more than 65,535
+/// groups, and the host names it (`victory_gpu`'s shader cache).
+pub fn with_group_base<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let was = GROUP_BASE.with(|g| g.replace(on));
+    let r = f();
+    GROUP_BASE.with(|g| g.set(was));
+    r
+}
+
+/// Whether this thread's translations take the group base ([`with_group_base`]).
+pub(crate) fn group_base() -> bool {
+    GROUP_BASE.with(std::cell::Cell::get)
+}
+
 pub fn translate(container: &[u8]) -> Result<HostShader, ShaderError> {
     match translate_plain(container) {
         Err(ShaderError::Unsupported { what, .. }) if what == lower::FIRST_HALF => {
@@ -2032,7 +2056,7 @@ mod tests {
         let res = crate::resource::track(&p, &native.layout, native.stage, None).unwrap();
         let io = crate::io::raise(&p, &native).unwrap();
         let st = crate::structure::structure(&p).unwrap();
-        let l = super::lower::lower(&super::lower::Parts {
+        let l = super::with_group_base(true, || super::lower::lower(&super::lower::Parts {
             native: &native,
             p: &p,
             st: &st,
@@ -2042,7 +2066,7 @@ mod tests {
             outputs: Vec::new(),
             prims: Vec::new(),
             mesh_stride: 0,
-        })
+        }))
         .unwrap();
         let base = l
             .user_data

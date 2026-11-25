@@ -2417,7 +2417,7 @@ impl<'a> Lower<'a> {
             Input::ThreadIdInGroup(c) => return self.thread_id(c),
             // The host's group id plus the dispatch's first group in x
             // (`shader.rs` `USER_GROUP_BASE`).
-            Input::GroupId(0) => {
+            Input::GroupId(0) if super::group_base() => {
                 let Val::I32(g) = self.compute_id("groupId.i32", 94, 0) else {
                     unreachable!()
                 };
