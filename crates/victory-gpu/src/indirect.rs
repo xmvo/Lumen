@@ -1479,7 +1479,15 @@ void main(uint3 g : SV_GroupID) {
                 l.ExecuteIndirect(&sig, 1, &dst_buf, u64::from(STRIDE), None, 0);
             }
         }
-        done_on(&warp.list, &dst_buf);
+        // Back to the common state for the next call.
+        // SAFETY: an open list and a live scratch buffer in INDIRECT_ARGUMENT.
+        unsafe {
+            warp.list.ResourceBarrier(&[transition(
+                &dst_buf,
+                D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
+                D3D12_RESOURCE_STATE_COMMON,
+            )]);
+        }
         warp.submit_and_wait();
         // SAFETY: the GPU is done; mapped host memory.
         unsafe {
