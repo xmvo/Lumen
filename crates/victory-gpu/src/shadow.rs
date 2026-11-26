@@ -1328,7 +1328,17 @@ fn workers() -> &'static Workers {
         more: std::sync::Condvar::new(),
     });
     STARTED.call_once(|| {
-        let n = std::thread::available_parallelism().map_or(4, |n| n.get() / 4).clamp(2, 6);
+        // (local) `VICTORY_WIDE_THREADS`: how many (1 to 16). The usual count is a
+        // quarter of the logical processors, two on a processor of four cores
+        // and eight threads, where the recording threads stand idle while a
+        // submission is prepared and more helpers have processors to run on.
+        let n = std::env::var("VICTORY_WIDE_THREADS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .map_or_else(
+                || std::thread::available_parallelism().map_or(4, |n| n.get() / 4).clamp(2, 6),
+                |n| n.clamp(1, 16),
+            );
         for i in 0..n {
             let _ = std::thread::Builder::new().name(format!("victory-wide-{i}")).spawn(move || {
                 let workers = WORKERS.get().expect("made above");
