@@ -3469,10 +3469,19 @@ struct Entry {
 }
 
 /// Title buffers by (start address, resource), with their copy once made.
-static BUFFERS: Mutex<BTreeMap<(u64, usize), Entry>> = Mutex::new(BTreeMap::new());
+// (local) A reader-writer lock: every draw's bind looks buffers up here from
+// each recording thread, and almost every look finds a copy that is there
+// already. Under one mutex those looks stood in line (a profile of the
+// first cell on four cores: 40 ms a frame of waiting in `buffers`, and a
+// share of the 140 ms the recording threads spent taking contended locks).
+static BUFFERS: std::sync::RwLock<BTreeMap<(u64, usize), Entry>> = std::sync::RwLock::new(BTreeMap::new());
 
-fn buffers() -> std::sync::MutexGuard<'static, BTreeMap<(u64, usize), Entry>> {
-    BUFFERS.lock().unwrap_or_else(|e| e.into_inner())
+fn buffers() -> std::sync::RwLockWriteGuard<'static, BTreeMap<(u64, usize), Entry>> {
+    BUFFERS.write().unwrap_or_else(|e| e.into_inner())
+}
+
+fn buffers_read() -> std::sync::RwLockReadGuard<'static, BTreeMap<(u64, usize), Entry>> {
+    BUFFERS.read().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A title buffer exists at `start` (`len` bytes).
@@ -3579,6 +3588,23 @@ pub(crate) fn find_any(address: u64, len: u64) -> Option<Arc<Shadow>> {
 
 fn lookup(address: u64, len: u64, any: bool) -> Option<Arc<Shadow>> {
     let end = address.checked_add(len.max(1))?;
+    // The usual case, with the others: the buffer has its copy.
+    {
+        let map = buffers_read();
+        let found = map.range(..=(address, usize::MAX)).rev().take(64).find(|(_, e)| e.end >= end);
+        match found {
+            Some((_, entry)) => {
+                if let Some(shadow) = &entry.shadow {
+                    return Some(shadow.clone());
+                }
+            }
+            None => {
+                drop(map);
+                return loose(address, end, len <= 1, any);
+            }
+        }
+    }
+    // Its copy is to be made: alone, and looked for again.
     let mut map = buffers();
     let key = map
         .range(..=(address, usize::MAX))
