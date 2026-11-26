@@ -8,7 +8,7 @@
   const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
 
-  let settings = { GamePath: '', LitShade: true, Level: 0.6, Fast: true, Rays: false, RaysFull: false };
+  let settings = { GamePath: '', LitShade: true, Level: 0.6, Fast: true, Rays: false, RaysFull: false, WaitPipelines: true };
   let pictures = [];
   let pictureAt = 0;
   let front = $('artA');
@@ -105,7 +105,7 @@
       if (v.detail) facts.push(v.detail);
     } else {
       if (v.phase === 'idle' && settings.Rays) facts.push('Ray tracing on (experimental)');
-      else if (v.phase === 'idle') facts.push(v.shadersReady ? 'Shaders ready' : v.shaderFiles ? 'Shaders are prepared on first play' : 'Shaders are made as you play');
+      else if (v.phase === 'idle') facts.push(v.shadersReady ? 'Shaders ready' : v.shaderFiles ? 'Every shader is prepared on first play' : 'Shaders are made as you play');
       facts.push(`${v.freeGb.toFixed(1)} of ${v.totalGb} GB free`);
       if (v.thirdValue && v.thirdValue !== '–') {
         facts.push(v.thirdLabel === 'fps' ? `${v.thirdValue} fps` : `${v.thirdLabel} ${v.thirdValue}`);
@@ -127,7 +127,7 @@
   }
 
   function showSettings() {
-    for (const [id, on] of [['tglLit', settings.LitShade], ['tglFast', settings.Fast], ['tglRays', settings.Rays], ['tglFull', settings.RaysFull]]) {
+    for (const [id, on] of [['tglLit', settings.LitShade], ['tglFast', settings.Fast], ['tglRays', settings.Rays], ['tglFull', settings.RaysFull], ['tglWait', settings.WaitPipelines]]) {
       $(id).classList.toggle('on', !!on);
       $(id).setAttribute('aria-checked', String(!!on));
     }
@@ -180,6 +180,7 @@
   $('play').addEventListener('click', async () => { card(false); await invoke('play'); tick(); });
   $('tglLit').addEventListener('click', () => { settings.LitShade = !settings.LitShade; showSettings(); save(); });
   $('tglFast').addEventListener('click', () => { settings.Fast = !settings.Fast; showSettings(); save(); });
+  $('tglWait').addEventListener('click', () => { settings.WaitPipelines = !settings.WaitPipelines; showSettings(); save(); });
   $('tglRays').addEventListener('click', () => { settings.Rays = !settings.Rays; showSettings(); save(); });
   $('tglFull').addEventListener('click', () => { settings.RaysFull = !settings.RaysFull; showSettings(); save(); });
   $('level').addEventListener('input', (e) => { settings.Level = Math.round(e.target.value * 10) / 10; showSettings(); });
@@ -193,7 +194,7 @@
   $('btnPrep').addEventListener('click', async () => { card(false); await invoke('prepare'); tick(); });
   $('btnKeys').addEventListener('click', () => invoke('open_controls'));
   $('btnLog').addEventListener('click', () => invoke('open_log'));
-  for (const id of ['tglLit', 'tglFast', 'tglRays', 'tglFull', 'btnPrep', 'btnPick', 'level']) $(id).classList.add('busy-off');
+  for (const id of ['tglLit', 'tglFast', 'tglRays', 'tglFull', 'tglWait', 'btnPrep', 'btnPick', 'level']) $(id).classList.add('busy-off');
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') card(false);

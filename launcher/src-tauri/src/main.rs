@@ -63,6 +63,9 @@ struct Settings {
     rays: bool,
     /// With rays: the Series X profile (full resolution) instead of Series S. Needs far more memory.
     rays_full: bool,
+    /// The game waits for a pipeline that is still being built instead of leaving its draws out:
+    /// nothing is missing from the picture, a first sight freezes for a moment instead.
+    wait_pipelines: bool,
 }
 
 impl Default for Settings {
@@ -75,6 +78,7 @@ impl Default for Settings {
             fast: true,
             rays: false,
             rays_full: false,
+            wait_pipelines: true,
         }
     }
 }
@@ -291,11 +295,33 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// What the shader step reads, and how many shaders it holds if that is known: the game's own
+    /// shader archive beside the game file (every shader the game has, about 26 thousand), else
+    /// a `shaders` folder of containers beside the launcher.
+    fn shader_source(&self) -> Option<(PathBuf, usize)> {
+        let game = self.settings().game_path;
+        if let Some(archive) = Path::new(&game).parent().map(|d| d.join("shaders.rpf")).filter(|p| p.is_file()) {
+            return Some((archive, 0));
+        }
+        let folder = self.shaders();
+        let count = count_shaders(&folder);
+        (count > 0).then_some((folder, count))
+    }
+
     /// Names this build and this set of shaders: the shader step is done once for each.
     fn stamp(&self) -> String {
         let exe = self.exe();
         let len = fs::metadata(&exe).map(|m| m.len()).unwrap_or(0);
-        format!("{len}-{}-{}", modified_secs(&exe).unwrap_or(0), count_shaders(&self.shaders()))
+        let shaders = match self.shader_source() {
+            Some((path, 0)) => format!(
+                "all-{}-{}",
+                fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+                modified_secs(&path).unwrap_or(0)
+            ),
+            Some((_, count)) => count.to_string(),
+            None => "0".into(),
+        };
+        format!("{len}-{}-{shaders}", modified_secs(&exe).unwrap_or(0))
     }
 
     fn prepared(&self) -> bool {
@@ -353,15 +379,14 @@ impl App {
     }
 
     fn start_prep(&self, s: &mut Inner) {
-        let shaders = self.shaders();
-        s.total = count_shaders(&shaders);
-        if s.total == 0 {
+        let Some((shaders, total)) = self.shader_source() else {
             s.play_after = false;
             s.step = "No shader files found".into();
-            s.hint = format!("Expected them in {}", shaders.display());
+            s.hint = "Pick your game file under Settings: its shaders.rpf is read from the same folder.".into();
             s.sticky = true;
             return;
-        }
+        };
+        s.total = total;
         s.log = self.logs().join("prepare.log");
         let switches = [
             ("VICTORY_HOST_WAVE".to_string(), "32".to_string()),
@@ -376,8 +401,8 @@ impl App {
                 s.progress = 0.0;
                 s.sticky = false;
                 s.step = "Preparing shaders".into();
-                s.detail = format!("{} shaders", thousands(s.total));
-                s.hint = "Done once for each build. Seconds if they were translated before, about 15 minutes if not."
+                s.detail = if s.total > 0 { format!("{} shaders", thousands(s.total)) } else { "every shader of the game".into() };
+                s.hint = "Done once for each build: every shader is made now, so none is made while you play. A few minutes."
                     .into();
             }
             Err(e) => {
@@ -411,6 +436,11 @@ impl App {
         }
         if settings.fast {
             switches.push(("VICTORY_ASYNC_PRESENT".into(), "1".into()));
+        }
+        if settings.wait_pipelines {
+            // up to four seconds a frame for pipelines being built (the layer's own default is half
+            // a second, after which the draws of a frame that needed them are left out)
+            switches.push(("VICTORY_PIPELINE_WAIT_MS".into(), "4000".into()));
         }
         let secs = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         s.log = self.logs().join(format!("game-{secs}.log"));
@@ -463,13 +493,20 @@ impl App {
             Phase::Idle => {
                 if s.polls % 12 == 0 {
                     s.prepared = self.prepared();
+                    s.shader_files = self.shader_source().is_some();
                 }
             }
             Phase::Prep => {
                 let tail = read_tail(&s.log, 16 * 1024);
                 if let Some(done) = number_before(&tail, " shaders so far").and_then(|n| n.parse::<usize>().ok()) {
-                    s.progress = (100.0 * done as f64 / s.total.max(1) as f64).min(99.0);
-                    s.detail = format!("{} of {}", thousands(done), thousands(s.total));
+                    // the archive's count is not known ahead: it holds about 26 thousand
+                    let total = if s.total > 0 { s.total } else { 26_000 };
+                    s.progress = (100.0 * done as f64 / total as f64).min(99.0);
+                    s.detail = if s.total > 0 {
+                        format!("{} of {}", thousands(done), thousands(s.total))
+                    } else {
+                        format!("{} shaders", thousands(done))
+                    };
                 }
                 let exited = s.child.as_mut().is_none_or(|c| !matches!(c.try_wait(), Ok(None)));
                 if exited {
@@ -621,7 +658,7 @@ fn play(app: State<'_, App>) {
         return;
     }
     // the ray tracing build keeps its own shader cache: nothing is prepared ahead for it
-    if app.settings().rays || app.prepared() || count_shaders(&app.shaders()) == 0 {
+    if app.settings().rays || app.prepared() || app.shader_source().is_none() {
         app.start_game(&mut s);
     } else {
         s.play_after = true;
@@ -728,7 +765,7 @@ fn main() {
         }),
     };
     app.inner.lock().unwrap().prepared = app.prepared();
-    app.inner.lock().unwrap().shader_files = count_shaders(&app.shaders()) > 0;
+    app.inner.lock().unwrap().shader_files = app.shader_source().is_some();
     // For checking the shader step by itself: LUMEN_AUTOTEST=prepare starts it with the window.
     if std::env::var("LUMEN_AUTOTEST").as_deref() == Ok("prepare") {
         let mut s = app.inner.lock().unwrap();
