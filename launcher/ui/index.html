@@ -54,6 +54,14 @@
       <button class="switch" id="tglFast" role="switch" aria-label="Fast mode"></button>
     </div>
     <div class="rowline">
+      <div><b>Ray tracing <i class="chip">experimental</i></b><small>Real bounce light and shadows. Much slower, grainy, can crash.</small></div>
+      <button class="switch" id="tglRays" role="switch" aria-label="Ray tracing"></button>
+    </div>
+    <div class="rowline" id="rowFull">
+      <div><b>Rays at full resolution</b><small>Off: lower resolution, the tested way. On: needs 64 GB of memory or more.</small></div>
+      <button class="switch" id="tglFull" role="switch" aria-label="Rays at full resolution"></button>
+    </div>
+    <div class="rowline">
       <div class="grow"><b>Game file</b><small id="game" title=""></small></div>
       <button class="link" id="btnPick">Change</button>
     </div>

@@ -24,6 +24,16 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// What the game commits at most, with some room (measured: 21.7 GB when a run ran out).
 const GAME_NEEDS_GB: f64 = 26.0;
 
+/// The switches the ray tracing build runs with: the set its authors recommend (pull requests
+/// #814 and #905 of fxceless/victory-fork, run by them on an RTX 3080).
+const RAY_SWITCHES: [(&str, &str); 5] = [
+    ("VICTORY_BVH_BUILDER", "1"),
+    ("VICTORY_BVH_QUARANTINE", "0"),
+    ("VICTORY_CARD_FETCH_INFLIGHT", "1"),
+    ("VICTORY_TEXTURE_DROP_MIPS", "1"),
+    ("VICTORY_TEXTURE_ROOM_PERCENT", "82"),
+];
+
 /// The switches the NVIDIA build runs with (the same set the Desktop launcher used).
 const GAME_SWITCHES: [(&str, &str); 14] = [
     ("VICTORY_NO_WATCHDOG", "1"),
@@ -49,6 +59,10 @@ struct Settings {
     lit_shade: bool,
     level: f64,
     fast: bool,
+    /// Experimental: run the ray tracing build (`bin\lumen-rt.exe`) instead of the usual one.
+    rays: bool,
+    /// With rays: the Series X profile (full resolution) instead of Series S. Needs far more memory.
+    rays_full: bool,
 }
 
 impl Default for Settings {
@@ -59,6 +73,8 @@ impl Default for Settings {
             lit_shade: true,
             level: 0.6,
             fast: true,
+            rays: false,
+            rays_full: false,
         }
     }
 }
@@ -290,17 +306,33 @@ impl App {
             .unwrap_or(false)
     }
 
-    /// Whether the layer is running already (started from here or from anywhere else): Windows
+    /// The experimental ray tracing build: another layer, kept beside the usual one.
+    fn ray_exe(&self) -> PathBuf {
+        self.root.join("bin").join("lumen-rt.exe")
+    }
+
+    /// Whether a layer is running already (started from here or from anywhere else): Windows
     /// refuses to open a running program's file for writing.
     fn running(&self) -> bool {
-        let exe = self.exe();
-        exe.is_file() && fs::OpenOptions::new().write(true).open(&exe).is_err()
+        [self.exe(), self.ray_exe()]
+            .iter()
+            .any(|exe| exe.is_file() && fs::OpenOptions::new().write(true).open(exe).is_err())
     }
 
     fn spawn(&self, args: &[&str], log: &Path, switches: &[(String, String)]) -> std::io::Result<Child> {
+        self.spawn_exe(&self.exe(), args, log, switches)
+    }
+
+    fn spawn_exe(
+        &self,
+        exe: &Path,
+        args: &[&str],
+        log: &Path,
+        switches: &[(String, String)],
+    ) -> std::io::Result<Child> {
         let out = fs::File::create(log)?;
         let err = out.try_clone()?;
-        let mut command = Command::new(self.exe());
+        let mut command = Command::new(exe);
         command
             .args(args)
             .current_dir(self.root.join("bin"))
@@ -382,7 +414,23 @@ impl App {
         }
         let secs = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         s.log = self.logs().join(format!("game-{secs}.log"));
-        match self.spawn(&["run", &settings.game_path, "--execute"], &s.log, &switches) {
+        // Rays: the other build, with its own switches and none of ours (it does not know them).
+        let mut exe = self.exe();
+        let mut args = vec!["run", settings.game_path.as_str(), "--execute"];
+        let mut loading = "Loading takes about four minutes. The world comes in slowly and can look stuck: it is not.";
+        if settings.rays {
+            exe = self.ray_exe();
+            if !exe.is_file() {
+                self.to_idle(s, "Ray tracing build not found", "Expected bin\\lumen-rt.exe. Turn Ray tracing off under Settings.");
+                return;
+            }
+            switches = RAY_SWITCHES.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            if !settings.rays_full {
+                args.extend(["--console", "series-s"]);
+            }
+            loading = "Ray tracing build (experimental): its own shaders are made on this first run, so it is slow to start, and it runs slower than the usual build.";
+        }
+        match self.spawn_exe(&exe, &args, &s.log, &switches) {
             Ok(child) => {
                 s.child = Some(child);
                 s.phase = Phase::Game;
@@ -390,8 +438,7 @@ impl App {
                 s.progress = 100.0;
                 s.sticky = false;
                 s.step = "Starting the game".into();
-                s.hint = "Loading takes about four minutes. The world comes in slowly and can look stuck: it is not."
-                    .into();
+                s.hint = loading.into();
                 s.third_label = "fps".into();
                 s.third_value = "–".into();
             }
@@ -573,7 +620,8 @@ fn play(app: State<'_, App>) {
         app.to_idle(&mut s, "Pick your game file first", "Settings, then Change: the game executable of your own copy.");
         return;
     }
-    if app.prepared() || count_shaders(&app.shaders()) == 0 {
+    // the ray tracing build keeps its own shader cache: nothing is prepared ahead for it
+    if app.settings().rays || app.prepared() || count_shaders(&app.shaders()) == 0 {
         app.start_game(&mut s);
     } else {
         s.play_after = true;
