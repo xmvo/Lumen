@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lumen</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-phase="idle">
+<div id="app">
+  <!-- backdrop: loading screens captured from the user's own copy, fading into each other -->
+  <div class="art" id="artA"><img alt="" draggable="false"></div>
+  <div class="art" id="artB"><img alt="" draggable="false"></div>
+  <div class="wash"></div>
+
+  <header id="bar">
+    <div class="brand"><b>Lumen</b><span id="build"></span></div>
+    <div class="winbtns">
+      <button id="btnMin" aria-label="Minimise"><svg viewBox="0 0 12 12"><path d="M2 6.5h8"/></svg></button>
+      <button id="btnClose" aria-label="Close"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg></button>
+    </div>
+  </header>
+
+  <main>
+    <p class="over">Grand Theft Auto</p>
+    <h1 aria-label="VI"><span>V</span><span>I</span></h1>
+
+    <p class="step" id="step">Ready</p>
+    <p class="meta" id="meta"></p>
+    <p class="hint" id="hint"></p>
+
+    <div class="actions">
+      <button id="play"><i class="dot"></i><span id="playText">Play</span><span id="playPct"></span></button>
+      <button class="ghost" id="btnSetup">Settings</button>
+      <button class="ghost" id="btnKeys">Controls</button>
+    </div>
+  </main>
+
+  <div class="progress"><i id="prog"></i></div>
+
+  <div id="veil"></div>
+  <div id="scrim"></div>
+  <aside id="setup">
+    <div class="rowline">
+      <div><b>Lit faces</b><small>Lights faces, clothes and rooms the sun does not reach.</small></div>
+      <button class="switch" id="tglLit" role="switch" aria-label="Lit faces"></button>
+    </div>
+    <div class="rowline slide">
+      <div><b>Light level</b></div>
+      <input type="range" id="level" min="0.2" max="1.2" step="0.1" value="0.6">
+      <output id="levelOut">0.6</output>
+    </div>
+    <div class="rowline">
+      <div><b>Fast mode</b><small>About one frame a second more. Uses more memory.</small></div>
+      <button class="switch" id="tglFast" role="switch" aria-label="Fast mode"></button>
+    </div>
+    <div class="rowline">
+      <div class="grow"><b>Game file</b><small id="game" title=""></small></div>
+      <button class="link" id="btnPick">Change</button>
+    </div>
+    <div class="links">
+      <button class="link" id="btnPrep" title="Play does this by itself, once for each build.">Prepare shaders again</button>
+      <button class="link" id="btnLog">Open last log</button>
+    </div>
+  </aside>
+</div>
+<script src="main.js"></script>
+</body>
+</html>

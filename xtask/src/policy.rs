@@ -28,10 +28,19 @@ const ALLOWED_NAMES: &[&str] = &[
 ];
 
 /// Paths explicitly exempted, with a reason. Keep this empty if at all possible.
-const EXCEPTIONS: &[(&str, &str)] = &[(
-    "crates/victory-formats/src/bcpack-tables.bin",
-    "the BCPack format's constant tables: nothing decodes without them and they cannot be derived (owner's decision, 2026-11-23; docs/asset-policy.md)",
-)];
+const EXCEPTIONS: &[(&str, &str)] = &[
+    (
+        "crates/victory-formats/src/bcpack-tables.bin",
+        "the BCPack format's constant tables: nothing decodes without them and they cannot be derived (owner's decision, 2026-11-23; docs/asset-policy.md)",
+    ),
+    // The launcher's own window: a page we wrote and an icon we drew (a white L on black).
+    // Nothing of the game: its backdrop pictures are read from the user's folder at run time.
+    ("launcher/ui/index.html", "the launcher's page, our own work"),
+    ("launcher/ui/main.js", "the launcher's page script, our own work"),
+    ("launcher/ui/style.css", "the launcher's page styles, our own work"),
+    ("launcher/src-tauri/icons/icon.ico", "the launcher's icon, drawn by us"),
+    ("launcher/src-tauri/icons/icon.png", "the launcher's icon, drawn by us"),
+];
 
 /// Signatures of formats that must never be committed.
 const FORBIDDEN_MAGIC: &[(&[u8], &str)] = &[
