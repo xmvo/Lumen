@@ -65,6 +65,9 @@ struct Journal {
     /// and the asking that did: `writes` answers for a range inside one
     /// from the journal, without another kernel call.
     ahead: Vec<(usize, usize)>,
+    /// `ahead` holds the answers of an asking by reservation ([`ask_reservations`]): starts
+    /// and ends both in increasing order, so a range is looked up by halving.
+    ordered: bool,
     ahead_asked: u64,
     /// The ahead asking stands for a whole submission ([`ask_once`]): no
     /// other ahead asking is made, and `ahead` stays, until
@@ -81,9 +84,111 @@ static JOURNAL: std::sync::RwLock<Journal> = std::sync::RwLock::new(Journal {
     written: BTreeMap::new(),
     found: Vec::new(),
     ahead: Vec::new(),
+    ordered: false,
     ahead_asked: 0,
     kept: false,
 });
+
+/// Whether `[first, last)` (pages) lies in a range asked ahead.
+fn in_ahead(j: &Journal, first: usize, last: usize) -> bool {
+    if j.ordered {
+        let i = j.ahead.partition_point(|&(_, end)| end < last);
+        j.ahead.get(i).is_some_and(|&(start, _)| start <= first)
+    } else {
+        j.ahead.iter().any(|&(a, b)| a <= first && last <= b)
+    }
+}
+
+/// Whether a submission's one asking goes by reservation ([`ask_reservations`]; after
+/// fablinoo/kelvaroq's patch 0045). Off unless `VICTORY_WATCH_RESERVATION=1` (not yet measured here): runs by distance, split by
+/// halves when an asking fails, then the ranges left alone, as before.
+fn by_reservation() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_WATCH_RESERVATION").is_some_and(|v| v == "1"))
+}
+
+/// Where the reservation holding page `first` ends (a page number), and whether it is private
+/// memory (not a mapped view, which the write watch cannot be asked about).
+fn reservation(first: usize) -> Option<(usize, bool)> {
+    use windows_sys::Win32::System::Memory::{
+        MemoryRegionInfo, QueryVirtualMemoryInformation, WIN32_MEMORY_REGION_INFORMATION,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    // SAFETY: plain data, filled by the query below.
+    let mut info: WIN32_MEMORY_REGION_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: the query takes an address as input and fills our structure.
+    let ok = unsafe {
+        QueryVirtualMemoryInformation(
+            GetCurrentProcess(),
+            (first * PAGE) as *const _,
+            MemoryRegionInfo,
+            (&raw mut info).cast(),
+            size_of_val(&info),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let end = (info.AllocationBase as usize).checked_add(info.RegionSize)? / PAGE;
+    // SAFETY: the successful query filled the flags; bit zero is Private.
+    Some((end, unsafe { info.Anonymous.Flags } & 1 != 0))
+}
+
+/// Beyond the gap of [`AHEAD_GAP`], only substantial neighbours are joined: two small copies
+/// far apart do not walk a GiB of page tables.
+fn can_join(first: usize, last: usize, (start, end): (usize, usize)) -> bool {
+    last.max(end) - first <= AHEAD_MAX && start.saturating_sub(last) <= AHEAD_GAP.max((last - first).min(end - start))
+}
+
+/// One asking for each reservation a submission's ranges lie in (`pieces`: page ranges in
+/// order), instead of runs by distance that fail across a reservation's end or into a view and
+/// are then asked again by halves. The boundary is asked of Windows once per group; a mapped
+/// view is left to the guards. Only an asking that succeeded gives an answer, and only the
+/// pieces asked for are answered from it.
+fn ask_reservations(j: &mut Journal, mut pieces: &[(usize, usize)]) {
+    j.asked += 1;
+    j.ahead_asked = j.asked;
+    j.ahead.clear();
+    j.ordered = true;
+    let mut allocation: Option<(usize, bool)> = None;
+    while let Some(&(first, end)) = pieces.first() {
+        if allocation.is_none_or(|(limit, _)| first >= limit) {
+            // A piece alone takes one call anyway: the boundary is asked for only to join
+            // neighbours or to spare a failed asking on a view.
+            let neighbour = pieces.get(1).is_some_and(|&next| can_join(first, end, next));
+            allocation = if neighbour || known_view(first * PAGE) { reservation(first) } else { None };
+        }
+        let (limit, private) = allocation.unwrap_or((end, true));
+        let mut last = end;
+        let mut n = 1;
+        while let Some(&next) = pieces.get(n) {
+            if last > limit || next.1 > limit || !can_join(first, last, next) {
+                break;
+            }
+            last = last.max(next.1);
+            n += 1;
+        }
+        if private && !known_view(first * PAGE) && ask_kernel(j, first, last) {
+            let mut same_call = false;
+            for &(start, end) in &pieces[..n] {
+                if let Some((_, kept_end)) = j.ahead.last_mut() {
+                    if end <= *kept_end {
+                        continue;
+                    }
+                    if same_call && start <= *kept_end {
+                        *kept_end = end;
+                        continue;
+                    }
+                }
+                j.ahead.push((start, end));
+                same_call = true;
+            }
+        }
+        pieces = &pieces[n..];
+    }
+    j.kept = !j.ahead.is_empty();
+}
 
 /// Ranges of one submission closer than this are asked about together:
 /// walking the pages between them costs less than another kernel call (a
@@ -130,6 +235,7 @@ pub(crate) fn ask_ahead(ranges: &[(usize, usize)]) {
     j.asked += 1;
     j.ahead_asked = j.asked;
     j.ahead.clear();
+    j.ordered = false;
     let mut i = 0;
     while i < pieces.len() {
         let first = pieces[i].0;
@@ -219,9 +325,18 @@ pub(crate) fn ask_once(ranges: &[(usize, usize)]) {
         return;
     }
     ask_once_end();
+    if by_reservation() {
+        let mut pieces: Vec<(usize, usize)> =
+            ranges.iter().filter(|r| r.0 < r.1).map(|&(start, end)| (start / PAGE, end.div_ceil(PAGE))).collect();
+        pieces.sort_unstable();
+        let mut j = JOURNAL.write().unwrap_or_else(|e| e.into_inner());
+        ask_reservations(&mut j, &pieces);
+        return;
+    }
     ask_ahead(ranges);
     let mut j = JOURNAL.write().unwrap_or_else(|e| e.into_inner());
     let j = &mut *j;
+    j.ordered = false;
     if j.ahead.is_empty() {
         // `ask_ahead` asked nothing (fewer than two ranges).
         j.asked += 1;
@@ -246,7 +361,7 @@ pub(crate) fn ask_once(ranges: &[(usize, usize)]) {
             continue;
         }
         let (first, last) = (start / PAGE, end.div_ceil(PAGE));
-        if !j.ahead.iter().any(|&(a, b)| a <= first && last <= b) && ask_kernel(j, first, last) {
+        if !in_ahead(j, first, last) && ask_kernel(j, first, last) {
             j.ahead.push((first, last));
         }
     }
@@ -378,10 +493,7 @@ fn ask_kernel(j: &mut Journal, first: usize, last: usize) -> bool {
 pub(crate) fn asked(start: usize, end: usize) -> Option<(u64, Vec<(usize, u64)>)> {
     let (first, last) = (start / PAGE, end.div_ceil(PAGE));
     let j = JOURNAL.read().unwrap_or_else(|e| e.into_inner());
-    j.ahead
-        .iter()
-        .any(|&(a, b)| a <= first && last <= b)
-        .then(|| (j.ahead_asked, j.written.range(first..last).map(|(&p, &w)| (p, w)).collect()))
+    in_ahead(&j, first, last).then(|| (j.ahead_asked, j.written.range(first..last).map(|(&p, &w)| (p, w)).collect()))
 }
 
 /// The pages of `[start, end)` (whole pages) as last written, for pages
@@ -397,7 +509,7 @@ pub(crate) fn writes(start: usize, end: usize, guarded: bool) -> Option<(u64, Ve
     // and reading it needs no line.
     {
         let j = JOURNAL.read().unwrap_or_else(|e| e.into_inner());
-        if j.ahead.iter().any(|&(a, b)| a <= first && last <= b) {
+        if in_ahead(&j, first, last) {
             return Some((
                 j.ahead_asked,
                 j.written
@@ -409,7 +521,7 @@ pub(crate) fn writes(start: usize, end: usize, guarded: bool) -> Option<(u64, Ve
     }
     let mut j = JOURNAL.write().unwrap_or_else(|e| e.into_inner());
     let j = &mut *j;
-    if j.ahead.iter().any(|&(a, b)| a <= first && last <= b) {
+    if in_ahead(j, first, last) {
         return Some((
             j.ahead_asked,
             j.written
