@@ -1,4 +1,62 @@
-# DexNom Runtime
+# Lumen
+
+Lumen runs an Xbox Series build of a game you own on Windows through Direct3D 12. The game's own
+x64 code runs natively; its console GPU code is translated for a PC graphics card.
+
+**This repository holds no game files, code or assets.** You need your own copy of the game.
+Lumen is not affiliated with or endorsed by the game's developer or publisher.
+
+Last updated: 2026-11-26. What we measured ourselves is said to be measured; the rest is marked.
+
+## Which build is for you
+
+| Your graphics card | Use | Where |
+|---|---|---|
+| **NVIDIA** | the NVIDIA build: a ready zip with a launcher, no build tools needed | branch [`nvidia`](../../tree/nvidia), [releases](../../releases) |
+| **AMD Radeon** | this branch (`main`), built from source | below |
+
+The two are different code lines. The NVIDIA build is the one we develop and test; its README has
+its measured status, known problems and settings. Do not use the NVIDIA zip on a Radeon card or
+this branch on an NVIDIA card:
+
+- **This branch on an NVIDIA card** (measured, RTX 3060 12 GB): 2.0 to 2.7 fps, and 8 of the
+  game's 64-lane compute pipelines are refused. Its optional speed switches lost the device there.
+- **The NVIDIA build on a Radeon card**: not tested.
+
+## This branch: the AMD build
+
+This branch is [DexNom Runtime](https://github.com/DexNom/VIctory) at its commit `2e01ab4`, a
+fork of Marvisak's [VIctory](https://github.com/Marvisak/VIctory) tested by its authors on a
+Radeon RX 7900 XTX, with two changes of ours:
+
+- **Shade is lit by default.** With the ray-structure builder off, the game's indirect light
+  resolves to nearly nothing and whatever the sun does not reach is black (faces, clothes, rooms).
+  The launcher starts the runtime with `VICTORY_AMBIENT=0.6` unless you set it yourself or ask for
+  ray tracing (`--rt`). The stand-in is fxceless/victory-fork's pull request #917, after
+  [Belobug's fork](https://github.com/Belobug/VIctory-Belobug-AMD).
+- `VICTORY_RELAY_QUEUE=1` (off by default): the landing thread's fetch runs on a queue of its
+  own. It gave no gain on our PC.
+
+**We have never run this branch on a Radeon card.** We have no AMD hardware. What it does on
+Radeon is what DexNom's own notes below say, as of that commit; we cannot confirm them. There is
+no ready zip for this branch: follow the build steps in those notes.
+
+## Licence and credits
+
+GPL-3.0-or-later, as VIctory is. The base is the work of Marvisak and VIctory's contributors, of
+DexNom and the runtimes it builds on, and of the authors named in the notes below; their history
+is kept in this repository. Our own changes were written with
+[Claude Code](https://claude.com/claude-code).
+
+---
+
+# DexNom Runtime's own notes
+
+**What follows is DexNom Runtime's README as it was at the commit this branch is built on. Its
+results and its test machine (a Radeon RX 7900 XTX) are DexNom's, not ours.** Where it says
+"DexNom Runtime", the same steps apply to this branch.
+
+## Introduction
 
 DexNom Runtime is a community fork of Marvisak's VIctory for Windows x64. It runs an Xbox Series executable from your own game installation and translates its GPU work for Direct3D 12. It builds on the Radeon runtime tested at `e061c69032b84ec6e2ec17340469cd689500dafd` and adds fixes for static sampler selection, wave64 lane masks and integer render targets. Game files, executables, saves and generated shader caches stay on your own computer.
 
