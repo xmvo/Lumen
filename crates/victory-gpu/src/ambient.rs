@@ -38,17 +38,20 @@ pub(crate) const LIGHT: (u8, u32) = (1, 176);
 /// Every image the programs write: their table's unordered views, in dwords.
 pub(crate) const OUTPUTS: [u32; 11] = [128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208];
 
-/// (local) `VICTORY_AMBIENT_ALSO=<dwords, comma separated>`: the other images of the resolve
-/// that are replaced by the level as well (those of the light's own format only). Without rays
-/// they hold whatever their memory did, like the light itself.
+/// The resolve's other images of the light's own format (packed light, full size: run g22a),
+/// replaced by the level as well. Without rays they hold whatever their memory did, like the
+/// light itself, and surfaces that read them (skin among them, by what it looks like: black,
+/// speckled or purple, and blocks along outlines) show that.
+/// shortcut: all five get the same constant, whatever each is for; not yet seen in a run.
+const ALSO: [u32; 5] = [152, 160, 168, 184, 200];
+
+/// The other images replaced: [`ALSO`], or (local) `VICTORY_AMBIENT_ALSO=<dwords, comma
+/// separated>` for a choice of them; `none` for the light alone, as before.
 pub(crate) fn also() -> &'static [u32] {
-    static ALSO: OnceLock<Vec<u32>> = OnceLock::new();
-    ALSO.get_or_init(|| {
-        std::env::var("VICTORY_AMBIENT_ALSO")
-            .unwrap_or_default()
-            .split(',')
-            .filter_map(|s| s.trim().parse().ok())
-            .collect()
+    static CHOSEN: OnceLock<Vec<u32>> = OnceLock::new();
+    CHOSEN.get_or_init(|| match std::env::var("VICTORY_AMBIENT_ALSO") {
+        Ok(set) => set.split(',').filter_map(|s| s.trim().parse().ok()).collect(),
+        Err(_) => ALSO.to_vec(),
     })
 }
 
