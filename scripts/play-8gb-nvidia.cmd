@@ -2,7 +2,7 @@
 rem Starts the title with the settings measured on an 8 GB NVIDIA card
 rem (RTX 3070 8 GB, Ryzen 7 5700, 32 GB RAM, Windows 10 22H2 with the Agility
 rem SDK 1.620 runtime in a D3D12 folder next to victory.exe): about 9 fps in
-rem the first room instead of 2.7. See docs/notes-8gb-nvidia.md.
+rem the first room instead of 2.7 (8.5 with the two fixes for the picture). See docs/notes-8gb-nvidia.md.
 rem
 rem Usage: set VICTORY_GAME_EXE to the title's executable in your own dump, then
 rem   scripts\play-8gb-nvidia.cmd [--console series-x] [more run options]
@@ -27,6 +27,12 @@ rem the rest live in the PC's memory, where the card's shaders write them over
 rem the bus and the processor compares them for changes every frame.
 if not defined VICTORY_CARD_BUFFERS_MIN_KB set "VICTORY_CARD_BUFFERS_MIN_KB=256"
 if not defined VICTORY_CARD_BUFFERS_MB set "VICTORY_CARD_BUFFERS_MB=1536"
+rem The texture pool reuses a texture's memory while the card may still draw
+rem from it: colourful noise on arms and faces. Off: no noise, no speed lost.
+if not defined VICTORY_TEXTURE_POOL set "VICTORY_TEXTURE_POOL=0"
+rem Send-ahead stage 2, not the default 3: stage 3 also stops settling at each
+rem present, and stretched triangles show for a frame. Stage 2: none, 8.5 fps.
+if not defined VICTORY_LATE_WAIT set "VICTORY_LATE_WAIT=2"
 rem The processor-side switches of dist\windows-x64\Play-VIctory.cmd, without
 rem its two ambient light switches and levels on demand (on this card those
 rem made the picture dark and foggy and the card slower).

@@ -12,7 +12,7 @@ or more.
 ## What to run
 
 `scripts/play-8gb-nvidia.cmd` (set `VICTORY_GAME_EXE` first). It starts the
-Series S profile with the settings below.
+Series S profile with the settings below, the last two rows included.
 
 | Settings | fps | Picture |
 |---|---|---|
@@ -21,7 +21,14 @@ Series S profile with the settings below.
 | Series S, nothing set | 4.4 | as Series X |
 | Series S, `VICTORY_CARD_BUFFERS_MIN_MB=1 VICTORY_CARD_BUFFERS_MB=1024` | 7.4 | the same |
 | Series S, `VICTORY_CARD_BUFFERS_MIN_KB=256 VICTORY_CARD_BUFFERS_MB=1536` | 7.9 | the same |
-| the same plus the launcher's processor-side switches (below) | **9.2** (9.5-9.8 in lighter shots, ~8.4 at 7,400 draws) | the same |
+| the same plus the launcher's processor-side switches (below) | 9.2, repeated at 7.8 and 9.3 | the same |
+| the same plus `VICTORY_TEXTURE_POOL=0` | 9.0 | no noise on skin (below) |
+| the same plus `VICTORY_LATE_WAIT=2` (what the script runs) | **8.5** | no one-frame stretched triangles (below) |
+
+Runs of the same settings differ by about 1.5 fps (the title reaches
+different shots at different times), so single-run differences under that
+are noise. Alone, the card buffers gave 8.1 and the processor-side switches
+3.9: the card buffers are the gain; the switches add little if anything.
 
 The processor-side switches are those of `Play-VIctory.cmd` without
 `VICTORY_AMBIENT`, `VICTORY_AMBIENT_AIR` and `VICTORY_LEVELS_ON_DEMAND`:
@@ -34,8 +41,10 @@ CARD_AWAKE=1 SHOW_AFTER=1 THIN=1 JOIN_PARTS=8 UPLOAD_AHEAD=1` (each with the
 
 An Nsight Graphics GPU Trace of two frames (Series S, nothing set, 4.4 fps):
 
-- the card's engines active 88-93 % of the time, the asynchronous copy engine
-  as much, the graphics front end 31-50 %;
+- the card's engines active 88-93 % of the time, the graphics front end
+  31-50 %; by the trace's actions, compute dispatches took 411 ms of the two
+  frames, draws 46 ms and copies 24 ms (the "asynchronous copy engine"
+  counter read the same as the engines' total and is not a copy measure);
 - the shader units' instruction throughput 1.5-2.5 % of peak, video memory
   1.6-2.4 %, L2 2.8-4.6 %; thread groups resident 24-40 % of the time;
 - 0.75-1.4 GB a frame written by the card into the PC's memory over PCIe
@@ -56,6 +65,31 @@ Before that, the built-in tools: `VICTORY_PROFILE` showed no thread near a
 full core (4.6 of 16 hardware threads busy, the submitting thread 42 % of
 one), and `VICTORY_TIMELINE` showed the card running about 181 ms of work a
 frame with about 97 ms idle, which set the frame.
+
+## Two picture faults, with nothing set as well
+
+Both show with this branch's defaults and with every setting above; the
+switches in the script remove them.
+
+- Colourful noise on skin (arms, faces), like texture memory nothing wrote:
+  gone with `VICTORY_TEXTURE_POOL=0`, at no cost here. The pool (`pool.rs`)
+  cuts textures from shared blocks and gives a piece out again 2.5 s after
+  it was let go; something still draws from it. Belobug's `rx9070xt` branch
+  has a fix in that direction (a barrier before the first upload into a piece
+  another texture held, and uploads recorded on the list's prelude), on a
+  different base.
+- Stretched triangles for one frame (a dark wedge across a corridor, an
+  orange smear): gone with send-ahead off (`VICTORY_LATE_WAIT=0`, 6.2 fps),
+  at stage 1 (7.6) and at stage 2 (8.5); there at stage 3, which the relay
+  turns on by default. Stage 3 adds one thing to stage 2: the present is no
+  longer a point where the flights are settled (`late_free_present` in
+  `host.rs`). `VICTORY_WINDOWS_OWN=1` (windows with a side per submission)
+  did not remove them and left 0.65 GB of the 32 GB free.
+
+Nsight Graphics' frame capture could not be used to look at them: the
+capture crashes inside `ngfx-capture-interception.dll` (a read at 0x8) at
+the swap chain's `Present` in `Host::present_planes`, on both profiles. Its
+GPU Trace works.
 
 ## Where the time goes now (9.2 fps)
 
