@@ -365,6 +365,15 @@ impl App {
         }
         let mut switches: Vec<(String, String)> =
             GAME_SWITCHES.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        // Helper threads by the processor: half its logical cores, four at least (what the table
+        // above says, measured on four cores and eight threads) and sixteen at most (the layer's
+        // own limit).
+        let helpers = std::thread::available_parallelism().map_or(4, |n| n.get() / 2).clamp(4, 16);
+        for (name, value) in switches.iter_mut() {
+            if name == "VICTORY_WIDE_THREADS" {
+                *value = helpers.to_string();
+            }
+        }
         if settings.lit_shade {
             switches.push(("VICTORY_AMBIENT".into(), format!("{:.1}", settings.level)));
         }
