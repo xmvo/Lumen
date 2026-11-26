@@ -2224,7 +2224,7 @@ impl HostHeap {
     #[cfg(test)]
     pub(crate) fn made(&self, index: u32) -> bool {
         self.made
-            .lock()
+            .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(index as usize)
             .is_some_and(|&key| key != 0)
