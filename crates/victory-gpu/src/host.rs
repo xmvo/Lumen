@@ -7717,21 +7717,42 @@ impl Host {
         };
         let mut buffer: Option<ID3D12Resource> = None;
         let mut data = std::ptr::null_mut();
-        // SAFETY: plain creation and mapping of an upload buffer.
-        let made = unsafe {
-            self.device
-                .CreateCommittedResource(
-                    &heap,
-                    D3D12_HEAP_FLAG_NONE,
-                    &desc,
-                    D3D12_RESOURCE_STATE_GENERIC_READ,
-                    None,
-                    &mut buffer,
-                )
-                .and_then(|()| {
-                    let b = buffer.as_ref().ok_or_else(windows::core::Error::empty)?;
-                    b.Map(0, None, Some(&mut data))
-                })
+        // (local) Out of memory is waited out, up to two seconds: upload
+        // memory is the PC's, kept in it while in use, and as the world
+        // loads on a PC with 16 GB there is at times none free for a moment
+        // (544 MB free, an 80 KiB buffer refused, and the list that wanted
+        // it did not close: the run ended). The submissions in the air give
+        // theirs back as they finish.
+        const OUT_OF_MEMORY: i32 = 0x8007_000E_u32 as i32;
+        let mut tries = 0;
+        let made = loop {
+            buffer = None;
+            // SAFETY: plain creation and mapping of an upload buffer.
+            let made = unsafe {
+                self.device
+                    .CreateCommittedResource(
+                        &heap,
+                        D3D12_HEAP_FLAG_NONE,
+                        &desc,
+                        D3D12_RESOURCE_STATE_GENERIC_READ,
+                        None,
+                        &mut buffer,
+                    )
+                    .and_then(|()| {
+                        let b = buffer.as_ref().ok_or_else(windows::core::Error::empty)?;
+                        b.Map(0, None, Some(&mut data))
+                    })
+            };
+            match &made {
+                Err(e) if e.code().0 == OUT_OF_MEMORY && tries < 100 => {
+                    if tries == 0 {
+                        tracing::warn!(size, "no memory for an upload buffer: waiting for some");
+                    }
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                _ => break made,
+            }
         };
         match made {
             Ok(()) => Some((buffer?, data.cast())),
