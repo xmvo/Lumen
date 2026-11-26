@@ -8,7 +8,7 @@
   const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
 
-  let settings = { GamePath: '', LitShade: true, Level: 0.6, Fast: true, Rays: false, RaysFull: false, WaitPipelines: true };
+  let settings = { GamePath: '', LitShade: true, Level: 0.6, Fast: true, Rays: false, RaysFull: false, WaitPipelines: true, SkinLight: true, FullTextures: false };
   let pictures = [];
   let pictureAt = 0;
   let front = $('artA');
@@ -127,7 +127,7 @@
   }
 
   function showSettings() {
-    for (const [id, on] of [['tglLit', settings.LitShade], ['tglFast', settings.Fast], ['tglRays', settings.Rays], ['tglFull', settings.RaysFull], ['tglWait', settings.WaitPipelines]]) {
+    for (const [id, on] of [['tglLit', settings.LitShade], ['tglFast', settings.Fast], ['tglRays', settings.Rays], ['tglFull', settings.RaysFull], ['tglWait', settings.WaitPipelines], ['tglSkin', settings.SkinLight], ['tglTex', settings.FullTextures]]) {
       $(id).classList.toggle('on', !!on);
       $(id).setAttribute('aria-checked', String(!!on));
     }
@@ -180,6 +180,8 @@
   $('play').addEventListener('click', async () => { card(false); await invoke('play'); tick(); });
   $('tglLit').addEventListener('click', () => { settings.LitShade = !settings.LitShade; showSettings(); save(); });
   $('tglFast').addEventListener('click', () => { settings.Fast = !settings.Fast; showSettings(); save(); });
+  $('tglSkin').addEventListener('click', () => { settings.SkinLight = !settings.SkinLight; showSettings(); save(); });
+  $('tglTex').addEventListener('click', () => { settings.FullTextures = !settings.FullTextures; showSettings(); save(); });
   $('tglWait').addEventListener('click', () => { settings.WaitPipelines = !settings.WaitPipelines; showSettings(); save(); });
   $('tglRays').addEventListener('click', () => { settings.Rays = !settings.Rays; showSettings(); save(); });
   $('tglFull').addEventListener('click', () => { settings.RaysFull = !settings.RaysFull; showSettings(); save(); });
@@ -194,7 +196,7 @@
   $('btnPrep').addEventListener('click', async () => { card(false); await invoke('prepare'); tick(); });
   $('btnKeys').addEventListener('click', () => invoke('open_controls'));
   $('btnLog').addEventListener('click', () => invoke('open_log'));
-  for (const id of ['tglLit', 'tglFast', 'tglRays', 'tglFull', 'tglWait', 'btnPrep', 'btnPick', 'level']) $(id).classList.add('busy-off');
+  for (const id of ['tglLit', 'tglFast', 'tglRays', 'tglFull', 'tglWait', 'tglSkin', 'tglTex', 'btnPrep', 'btnPick', 'level']) $(id).classList.add('busy-off');
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') card(false);

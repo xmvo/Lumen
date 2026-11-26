@@ -175,7 +175,9 @@ body.setup-open #setup > :nth-child(5) { animation-delay: 0.19s; }
 .rowline.slide input { flex: 1; }
 .rowline .chip { font: 500 10.5px/1 var(--ui); font-style: normal; letter-spacing: 0.04em; color: rgba(255, 255, 255, 0.7); padding: 3px 7px 4px; margin-left: 6px; border-radius: 8px; background: rgba(255, 255, 255, 0.12); vertical-align: 1px; }
 .rowline.off { opacity: 0.35; pointer-events: none; }
-.rowline { min-height: 50px; padding: 7px 0; }
+.rowline { min-height: 44px; padding: 5px 0; }
+#setup { max-height: calc(100vh - 48px); overflow-y: auto; }
+#setup::-webkit-scrollbar { width: 0; }
 .rowline small { font-size: 11.5px; }
 .rowline output { width: 24px; text-align: right; font-size: 12.5px; color: var(--soft); font-variant-numeric: tabular-nums; }
 

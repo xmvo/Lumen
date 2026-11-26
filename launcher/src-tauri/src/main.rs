@@ -66,6 +66,12 @@ struct Settings {
     /// The game waits for a pipeline that is still being built instead of leaving its draws out:
     /// nothing is missing from the picture, a first sight freezes for a moment instead.
     wait_pipelines: bool,
+    /// The fill light also goes to the five other light images the game's resolve writes (skin and
+    /// outlines read them). New and not yet seen in a run: off gives the picture of before.
+    skin_light: bool,
+    /// Every texture is uploaded whole at once instead of its small levels first. Sharp textures
+    /// arrive sooner; it takes far more memory (for PCs with 32 GB or more).
+    full_textures: bool,
 }
 
 impl Default for Settings {
@@ -79,6 +85,8 @@ impl Default for Settings {
             rays: false,
             rays_full: false,
             wait_pipelines: true,
+            skin_light: true,
+            full_textures: false,
         }
     }
 }
@@ -433,6 +441,12 @@ impl App {
         }
         if settings.lit_shade {
             switches.push(("VICTORY_AMBIENT".into(), format!("{:.1}", settings.level)));
+            if !settings.skin_light {
+                switches.push(("VICTORY_AMBIENT_ALSO".into(), "none".into()));
+            }
+        }
+        if settings.full_textures {
+            switches.retain(|(name, _)| name != "VICTORY_LEVELS_ON_DEMAND");
         }
         if settings.fast {
             switches.push(("VICTORY_ASYNC_PRESENT".into(), "1".into()));
