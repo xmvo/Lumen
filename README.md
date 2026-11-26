@@ -1,4 +1,198 @@
-# VIctory fork (work in progress)
+# Lumen, NVIDIA build
+
+Lumen runs an Xbox Series build of a game you own on Windows through Direct3D 12. The game's own
+x64 code runs natively; its console GPU code is translated for a PC graphics card. This branch
+(`nvidia`) is the build for NVIDIA cards.
+
+**This repository holds no game files, code or assets.** You need your own copy of the game.
+Lumen is not affiliated with or endorsed by the game's developer or publisher.
+
+Everything in this section was measured or checked by us and is dated. Where something was not
+measured, it says so. Last updated: 2026-11-26.
+
+## Honest status
+
+**It runs and you can play, slowly.** It is not a finished port.
+
+| | State | How we know |
+|---|---|---|
+| Boot, menus, loading screens | work, 15-30 fps | every run |
+| Opening cutscene and first gameplay (the cell, the yard) | work | every run that reaches the world |
+| Speed in gameplay | **about 5.5 to 5.9 fps** | timed runs on the test PC below, builds up to release 0.4 |
+| Time from start to gameplay | about 4 to 5 minutes with warm caches | timed runs |
+| Further into the story | not tested by us | |
+| Ray tracing | experimental, did not hold on the test PC | see below |
+
+The frame rate is limited by the processor, not the graphics card: the card sits idle for most of
+each frame while one thread of the layer prepares and submits the game's draws (about 3,500 a
+frame) and keeps the card's copies of game memory up to date.
+
+### The test PC
+
+Every number in this section is from this one machine:
+
+- Intel Core i7-4790 (4 cores, 8 threads)
+- NVIDIA GeForce RTX 3060, 12 GB
+- 16 GB of RAM, page file 32 to 48 GB
+- Windows 11
+- Series X profile (the full-resolution one)
+
+It is a weak processor and little memory for this job. A faster processor should do better; we
+have no measurements from other machines. One outside run on an RTX 5090 reached the world and
+drew it; no frame rate was reported back.
+
+## Download and run (no build tools needed)
+
+Releases are on the [releases page](../../releases). The newest is **0.5**
+(`Lumen-NVIDIA-0.5.zip`).
+
+1. Unzip the whole `Lumen` folder somewhere outside Program Files.
+2. Run `LumenLauncher.exe`. The files are not signed, so Windows SmartScreen asks once.
+3. Settings, Change: pick `game_scarlett_master.exe` in your own copy of the game.
+4. Close your browser and other large programs.
+5. Press Play.
+
+The first Play prepares every shader of the game from the `shaders.rpf` beside the game file you
+picked (25,889 found in ours: 25,689 translate, 200 do not). That takes a few minutes once per
+build. After that Play starts the game directly.
+
+What is in the zip: `LumenLauncher.exe` (source in `launcher/`), `bin\lumen.exe` (this branch's
+layer), `bin\lumen-rt.exe` (the ray tracing build, branch `rays-pr905`), `README.txt`,
+`CONTROLS.txt`.
+
+### What you need
+
+- Windows 11 (Windows 10 needs the WebView2 runtime for the launcher)
+- An NVIDIA card with 12 GB or more (only the RTX 3060 12 GB was tested by us)
+- 16 GB of RAM at the very least; with 16 GB it runs out of memory in some runs (see Known
+  problems). 32 GB or more is far better.
+- Your own unpacked copy of the game
+
+## Launcher settings
+
+| Setting | Default | What it does | Checked? |
+|---|---|---|---|
+| Lit faces | on | Fills in the indirect light the game expects from ray tracing, so shade is not black (`VICTORY_AMBIENT`) | yes, in runs |
+| Light level | 0.6 | Strength of that fill light | 0.6 looked balanced in the first rooms |
+| Skin light fix | on | Also fills five more light images the game's resolve writes, which skin and outlines read | seen in one run: the cell scene is clean with it; not yet confirmed on a face in motion |
+| Fast mode | on | Shows frames behind the queue (`VICTORY_ASYNC_PRESENT`); about one frame a second more, uses more memory | yes |
+| No pop-in | on | A frame waits up to 4 s for a pipeline still being built instead of drawing without it (`VICTORY_PIPELINE_WAIT_MS=4000`) | not play-tested |
+| Full textures at once | off | Uploads textures whole instead of small levels first; for 32 GB of RAM or more | not tested |
+| Ray tracing (experimental) | off | Runs `bin\lumen-rt.exe` instead | see below |
+| Rays at full resolution | off | Series X profile with rays; its authors ran out of memory with 32 GB | not tested |
+
+Helper threads are chosen from the processor: half its logical cores, 4 at least, 16 at most.
+
+Closing the launcher never closes a running game. Logs are in the `logs` folder beside it.
+
+## Known problems
+
+- **Out of memory while the world loads** on 16 GB. The game commits 21 to 24 GB. A larger fixed
+  page file (32 GB to start) and closing other programs help; turning Fast mode off uses less.
+- **A crash inside the NVIDIA driver** (`nvwgf2umx.dll`, access violation) while the world loads,
+  about one run in seven here. Starting again works. Not fixed.
+- **Skin can turn black, speckled or purple** while characters or the camera move, and blocks can
+  show along outlines. Release 0.5 carries a fix aimed at this; it is not yet confirmed on faces.
+- **Late textures and low-detail models** at the start of cutscenes: the game streams them while it
+  plays and they arrive later than on the console.
+- **The first pass through a place hitches**: the graphics driver builds each pipeline the first
+  time the game uses it, and keeps it. This cannot be done ahead; which pipelines exist is only
+  known when the game asks for them.
+- **200 shaders do not translate**: 195 are the game's voxelizer (a console geometry stage the
+  translator does not support at all) and 5 are shadow ray tracers. In a 25-minute session the
+  game bound 2,871 different shaders and none of these, so they cost nothing in what we played.
+- Sound, saves and controller input: not tested by us beyond ordinary keyboard-and-mouse play.
+
+## Ray tracing (experimental)
+
+The switch runs a second layer, `bin\lumen-rt.exe`: the live ray tracing of pull requests #814
+(by staronthehorizon) and #905 of fxceless/victory-fork, kept on branch `rays-pr905` unchanged.
+It has none of this branch's fixes or speed work.
+
+- Its authors ran it on an RTX 3080 with 32 GB of RAM: interiors lit by bounce light, grainy,
+  300 to 440 ms a frame, on the Series S profile.
+- **On our test PC it did not hold**: the ray structure builder started (all 53 of its programs
+  had pipelines) and about 20 seconds later the graphics device was lost. The PC had under 400 MB
+  of memory free at that moment, so memory may be the cause; we do not know.
+- We have not run it on any other card.
+
+## What is in this build
+
+The base is [fxceless/victory-fork](https://github.com/fxceless/victory-fork) (by hyphennn and
+contributors), itself a fork of [VIctory](https://github.com/Marvisak/VIctory) by Marvisak. On top
+of its `main` at `0b0074e`:
+
+- its pull request #770 (a bundle of 22 pull requests, put together by ExoCalibra) and pull
+  requests #929, #916, #919, #947, #927, #907, #934, #913 and #932;
+- the paired form for the console's 64-lane compute programs on 32-lane cards (its pull request
+  #854): without it NVIDIA cards refuse many of the game's lighting programs;
+- its pull request #834 (compute dispatches past 65,535 groups), used for the one program that
+  needs it (the lighting pass): applied to all programs it gave wrong colours on our card, for a
+  reason we did not find;
+- the stand-in for indirect light (its pull request #917, after
+  [Belobug's fork](https://github.com/Belobug/VIctory-Belobug-AMD)), extended here to the
+  resolve's other light images;
+- two shader fixes after [DexNom Runtime](https://github.com/DexNom/VIctory): pixel programs read
+  their 2x2 group through quad operations, and a cube map's level from gradients is not scaled
+  twice;
+- our own changes: locks that readers no longer queue for (buffer lookups, descriptor slots, the
+  write-watch journal and guards), retired objects in sixteen lists, a lock around tile mapping
+  while an upload records, a retry when an upload buffer is refused for want of memory, a hook for
+  the title's watchdog, a wait for the decoration bake's textures;
+- two opt-in switches that are **off** because they did not help or were not measured on the
+  test PC: `VICTORY_HEAP_WORKER=1` (upstream's texture thread, 3.6 fps here against 5.5 to 5.9)
+  and `VICTORY_WATCH_RESERVATION=1` (after Kelvaroq's patch 0045, not yet measured);
+- the launcher (`launcher/`, Tauri).
+
+Tried and not taken, with the result on the test PC: [Kelvaroq](https://github.com/fablinoo/kelvaroq)
+as a whole (1 to 2.7 fps in the world, one lost device); a full merge of the fork's newer `main`
+(the two lines rebuilt the same memory tracking differently, and its `main` lacks the 64-lane
+form above).
+
+## Build from source
+
+Rust (the toolchain `rust-toolchain.toml` names) with the MSVC tools and a Windows SDK.
+
+```
+cargo build --profile diag -p victory --features diagnostics
+```
+
+The layer is `target\diag\victory.exe` (the releases ship it as `bin\lumen.exe`). The launcher:
+
+```
+cd launcher\src-tauri
+cargo build --release
+```
+
+Nothing from the game may be committed: `cargo xtask policy` runs before every commit (see
+`docs/asset-policy.md`).
+
+## Branches of this repository
+
+| Branch | What it is |
+|---|---|
+| `nvidia` | this build |
+| `main` | the build for AMD Radeon, on DexNom Runtime |
+| `rays-pr905` | the ray tracing build, upstream's pull request #905 as it is |
+
+## Credits and licence
+
+GPL-3.0-or-later, as VIctory is. All of the base is the work of Marvisak, of hyphennn and the
+contributors of fxceless/victory-fork, and of the authors of the pull requests and forks named
+above; their history is kept in this repository. [XCL](https://github.com/ivall/xcl) (GPL-2.0-only)
+was a reference for the fork this builds on. This build's own changes were written with
+[Claude Code](https://claude.com/claude-code).
+
+---
+
+# Notes inherited from the fork this build is based on
+
+**What follows is the README of fxceless/victory-fork as it was at our base, kept for its
+description of the switches and the internals. Its status, its numbers and its test machine (an
+RTX 4070 with an i7-14700KF) are that fork's, not this build's, and parts of it are out of date
+here.**
+
+## The fork's own introduction
 
 A work-in-progress fork of [VIctory](https://github.com/Marvisak/VIctory), a
 compatibility layer that runs an Xbox Series title natively on Windows from
