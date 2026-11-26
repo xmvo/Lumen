@@ -35,6 +35,42 @@ const PROGRAM: &[u8] = b"CS_ScreenProbes_TemporalResolve";
 /// integers): root parameter and place in its table, in dwords.
 pub(crate) const LIGHT: (u8, u32) = (1, 176);
 
+/// Every image the programs write: their table's unordered views, in dwords.
+pub(crate) const OUTPUTS: [u32; 11] = [128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208];
+
+/// (local) `VICTORY_AMBIENT_ALSO=<dwords, comma separated>`: the other images of the resolve
+/// that are replaced by the level as well (those of the light's own format only). Without rays
+/// they hold whatever their memory did, like the light itself.
+pub(crate) fn also() -> &'static [u32] {
+    static ALSO: OnceLock<Vec<u32>> = OnceLock::new();
+    ALSO.get_or_init(|| {
+        std::env::var("VICTORY_AMBIENT_ALSO")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect()
+    })
+}
+
+/// Says once what the light and the resolve's other images are (format and size).
+pub(crate) fn describe(light: This, others: &[(u32, u64)]) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let what = |r: u64| match crate::resource::host_resource(r as This) {
+            // SAFETY: a live resource.
+            Some(h) => {
+                let d = unsafe { h.GetDesc() };
+                format!("format {} {}x{}x{} mips {}", d.Format.0, d.Width, d.Height, d.DepthOrArraySize, d.MipLevels)
+            }
+            None => "no host image".to_owned(),
+        };
+        tracing::info!(light = %what(light as u64), "the resolve's images: the light (dword 176)");
+        for &(o, r) in others {
+            tracing::info!(dword = o, image = %what(r), also = also().contains(&o), "the resolve's images: another");
+        }
+    });
+}
+
 /// Whether the container `bytes` is one of the programs.
 pub(crate) fn resolves(bytes: &[u8]) -> bool {
     bytes.windows(PROGRAM.len()).any(|w| w == PROGRAM)

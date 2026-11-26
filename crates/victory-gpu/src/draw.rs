@@ -2154,18 +2154,34 @@ impl State {
         let named = stage.translated().used.iter().any(|u| {
             u.kind == ResourceType::Uav && u.root == RootType::Table && (u.slot, u.table_offset_dwords) == (slot, offset)
         });
-        let light = match self.roots_ref(true).get(usize::from(slot)) {
-            Some(Root::Table(table)) if named => match crate::descriptor::view(table + u64::from(offset) * 4) {
-                Some(View::Unordered(r, ..)) => r,
-                _ => 0,
-            },
+        let table = match self.roots_ref(true).get(usize::from(slot)) {
+            Some(Root::Table(table)) if named => *table,
             _ => 0,
         };
+        let image = |offset: u32| match crate::descriptor::view(table + u64::from(offset) * 4) {
+            Some(View::Unordered(r, ..)) if table != 0 => r,
+            _ => 0,
+        };
+        let light = image(offset);
         if light == 0 {
             once!("no stand-in for indirect light: the resolve's tables are not as expected");
             return false;
         }
-        crate::ambient::replace(list, light as This)
+        // The resolve writes eleven images, not one (its table's unordered views at dwords 128 to
+        // 208): what each is, once, and the others asked for by name are replaced as well.
+        let others: Vec<(u32, u64)> = crate::ambient::OUTPUTS
+            .iter()
+            .filter(|&&o| o != offset)
+            .map(|&o| (o, image(o)))
+            .collect();
+        crate::ambient::describe(light as This, &others);
+        let mut recorded = crate::ambient::replace(list, light as This);
+        for &(o, other) in &others {
+            if other != 0 && crate::ambient::also().contains(&o) {
+                recorded |= crate::ambient::replace(list, other as This);
+            }
+        }
+        recorded
     }
 
     /// What a draw or dispatch runs, for the device-removed report
