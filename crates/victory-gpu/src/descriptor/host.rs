@@ -29,6 +29,13 @@ pub(crate) struct HostHeap {
     /// for every slot of its tables from each recording thread, and nearly
     /// always the slot is made already.
     made: std::sync::RwLock<Vec<u64>>,
+    /// (local) What `made` holds for a slot whose view is made from that
+    /// record, 0 otherwise, readable without any lock: the usual answer of
+    /// [`HostHeap::mirror`]. Readers of `made` itself stood behind its
+    /// writers (the records the title copies as bytes are mirrored by the
+    /// submitting thread, thousands a frame): 52 ms a frame in a profile.
+    /// Written only with `made` held for writing.
+    fresh: Vec<std::sync::atomic::AtomicU64>,
     /// A fingerprint of the record each slot held when the pass over
     /// records copied in as bytes last looked at it
     /// ([`HostHeap::mirror_copied`]; 0: never looked at). Made on first use.
@@ -1058,6 +1065,7 @@ impl HostHeap {
             dynamic: extra,
             sampler,
             made: std::sync::RwLock::new(vec![0; count as usize]),
+            fresh: (0..count).map(|_| std::sync::atomic::AtomicU64::new(0)).collect(),
             copied: Mutex::new(Vec::new()),
             kept: (0..count + extra).map(|_| Mutex::new(None)).collect(),
             next: Mutex::new((0, vec![false; DYNAMIC as usize])),
@@ -1565,6 +1573,9 @@ impl HostHeap {
         let Some(key) = made.get_mut(index as usize).map(std::mem::take) else {
             return;
         };
+        if let Some(fresh) = self.fresh.get(index as usize) {
+            fresh.store(0, std::sync::atomic::Ordering::Release);
+        }
         if key == 0 {
             return;
         }
@@ -2096,13 +2107,15 @@ impl HostHeap {
         let view = (tag == VIEW_TAG).then(|| view_at(i, generation)).flatten();
         // (local) The usual case, without standing in line: the slot is made
         // from this very record and shows what it should.
-        if view.is_some() {
-            let same = self.made.read().unwrap_or_else(|e| e.into_inner())[index as usize] == key;
-            if same && !self.tiled_stale(index) {
-                return view;
-            }
+        if view.is_some()
+            && self.fresh[index as usize].load(std::sync::atomic::Ordering::Acquire) == key
+            && !self.tiled_stale(index)
+        {
+            return view;
         }
         let mut made = self.made.write().unwrap_or_else(|e| e.into_inner());
+        // Whatever follows, the slot is not known made until it is again.
+        self.fresh[index as usize].store(0, std::sync::atomic::Ordering::Release);
         let Some(view) = view else {
             // Not a view of ours (never written, or of a resource the
             // title released): nothing to read.
@@ -2177,6 +2190,8 @@ impl HostHeap {
             self.record_tiled(index, &view, tiled);
             self.keep(index, kept);
         }
+        // (local) Made from this record (or left for later: 0).
+        self.fresh[index as usize].store(made[index as usize], std::sync::atomic::Ordering::Release);
         Some(view)
     }
 
