@@ -2172,7 +2172,7 @@ impl State {
         let others: Vec<(u32, u64)> = crate::ambient::OUTPUTS
             .iter()
             .filter(|&&o| o != offset)
-            .map(|&o| (o, image(o)))
+            .map(|&o| (o, image(o) as u64))
             .collect();
         crate::ambient::describe(light as This, &others);
         let mut recorded = crate::ambient::replace(list, light as This);
